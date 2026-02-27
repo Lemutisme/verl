@@ -134,6 +134,9 @@ class TaskRunner:
         # - for code related prompt, we send to a sandbox if there are test cases
         # - finally, we combine all the rewards together
         # - The reward type depends on the tag of the data
+        reward_kwargs = config.reward_model.get("reward_kwargs", {})
+        reward_kwargs = OmegaConf.to_container(reward_kwargs, resolve=True) if reward_kwargs is not None else {}
+
         if config.reward_model.enable:
             if config.reward_model.strategy in {"fsdp", "fsdp2"}:
                 from verl.workers.fsdp_workers import RewardModelWorker
@@ -155,6 +158,7 @@ class TaskRunner:
             0,
             max_resp_len=config.data.max_response_length,
             overlong_buffer_cfg=config.reward_model.overlong_buffer,
+            **reward_kwargs,
         )
 
         # Note that we always use function-based RM for validation
@@ -164,6 +168,7 @@ class TaskRunner:
             1,
             max_resp_len=config.data.max_response_length,
             overlong_buffer_cfg=config.reward_model.overlong_buffer,
+            **reward_kwargs,
         )
         resource_pool_manager = ResourcePoolManager(resource_pool_spec=resource_pool_spec, mapping=mapping)
 

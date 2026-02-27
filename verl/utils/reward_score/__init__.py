@@ -45,6 +45,24 @@ def default_compute_score(
         from . import gsm8k
 
         res = gsm8k.compute_score(solution_str, ground_truth)
+    elif data_source in ["mbpp:train", "mbpp:test", "mbpp:validation", "mbpp"]:
+        mbpp_mode = str(kwargs.get("mbpp_reward_mode", "action_thought")).strip().lower()
+        use_primal_dual = kwargs.get("mbpp_use_primal_dual", kwargs.get("mbpp_primal_dual", False))
+        if isinstance(use_primal_dual, str):
+            use_primal_dual = use_primal_dual.strip().lower() in {"1", "true", "t", "yes", "y", "on"}
+        else:
+            use_primal_dual = bool(use_primal_dual)
+
+        if mbpp_mode in {"primal_dual", "pd"} or use_primal_dual:
+            from . import mbpp_primal_dual_reward as mbpp
+        elif mbpp_mode in {"correct_only", "correctness_only"}:
+            from . import mbpp_correct_only_reward as mbpp
+        elif mbpp_mode in {"classic", "correctness"}:
+            from . import mbpp as mbpp
+        else:
+            from . import mbpp_action_thought_reward as mbpp
+
+        res = mbpp.compute_score_mbpp(solution_str, ground_truth, **kwargs)
     elif data_source in ["lighteval/MATH", "DigitalLearningGmbH/MATH-lighteval", "HuggingFaceH4/MATH-500"]:
         from . import math_reward
 
