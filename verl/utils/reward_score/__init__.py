@@ -16,6 +16,14 @@
 from verl.utils.import_utils import deprecated
 
 
+def _to_bool(value, default=False):
+    if value is None:
+        return default
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "t", "yes", "y", "on"}
+    return bool(value)
+
+
 def default_compute_score(
     data_source,
     solution_str,
@@ -89,21 +97,44 @@ def default_compute_score(
         from . import prime_math
 
         res = prime_math.compute_score(solution_str, ground_truth)
-    elif data_source in ["codecontests", "apps", "codeforces", "taco"]:
+    elif data_source in ["apps", "apps:train", "apps:test", "apps:validation"]:
+        from . import apps
+
+        apps_continuous = _to_bool(kwargs.get("apps_continuous", kwargs.get("continuous", True)), default=True)
+        apps_timeout = int(kwargs.get("apps_timeout", kwargs.get("timeout", 10)))
+        res = apps.compute_score(
+            completion=solution_str,
+            ground_truth=ground_truth,
+            sandbox_fusion_url=sandbox_fusion_url,
+            concurrent_semaphore=concurrent_semaphore,
+            memory_limit_mb=memory_limit_mb,
+            continuous=apps_continuous,
+            timeout=apps_timeout,
+        )
+    elif data_source in ["codecontests", "codeforces", "taco"]:
+        code_continuous = _to_bool(kwargs.get("code_continuous", kwargs.get("continuous", True)), default=True)
+        code_timeout = int(kwargs.get("code_timeout", kwargs.get("timeout", 10)))
+
         # Use the passed sandbox_fusion_url if available
         if sandbox_fusion_url:
             from . import sandbox_fusion
 
             # Pass the URL directly, ground_truth likely contains test cases here
             res = sandbox_fusion.compute_score(
-                sandbox_fusion_url, concurrent_semaphore, memory_limit_mb, solution_str, ground_truth, continuous=True
+                sandbox_fusion_url,
+                concurrent_semaphore,
+                memory_limit_mb,
+                solution_str,
+                ground_truth,
+                continuous=code_continuous,
+                timeout=code_timeout,
             )
         else:
             # If no sandbox URL is provided, fall back to prime_code or raise error
             from . import prime_code
 
             # Assuming prime_code doesn't need the URL
-            res = prime_code.compute_score(solution_str, ground_truth, continuous=True)
+            res = prime_code.compute_score(solution_str, ground_truth, continuous=code_continuous)
     elif data_source in ["hiyouga/geometry3k"]:
         from . import geo3k
 
