@@ -20,6 +20,7 @@ This trainer supports model-agonistic model initialization with huggingface
 
 import json
 import os
+import shutil
 import uuid
 from collections import defaultdict
 from copy import deepcopy
@@ -45,6 +46,7 @@ from verl.trainer.ppo import core_algos
 from verl.trainer.ppo.core_algos import AdvantageEstimator, agg_loss
 from verl.trainer.ppo.metric_utils import (
     compute_data_metrics,
+    compute_reward_extra_metrics,
     compute_throughout_metrics,
     compute_timing_metrics,
     process_validation_metrics,
@@ -997,12 +999,78 @@ class RayPPOTrainer:
             and self.config.actor_rollout_ref.actor.checkpoint["async_save"]
         ):
             print("skip write latest_checkpointed_iteration.txt when async_save is True")
-            return
+            return local_global_step_folder
         local_latest_checkpointed_iteration = os.path.join(
             self.config.trainer.default_local_dir, "latest_checkpointed_iteration.txt"
         )
         with open(local_latest_checkpointed_iteration, "w") as f:
             f.write(str(self.global_steps))
+
+        return local_global_step_folder
+
+    def _select_best_checkpoint_metric(self, val_metrics: dict[str, Any]) -> tuple[str, float] | None:
+        configured_metric = self.config.trainer.get("best_checkpoint_metric", "auto")
+        if configured_metric not in (None, "", "auto"):
+            if configured_metric not in val_metrics:
+                print(
+                    f"Configured best checkpoint metric {configured_metric!r} not found in validation metrics. "
+                    "Skipping best-checkpoint update."
+                )
+                return None
+            return configured_metric, float(val_metrics[configured_metric])
+
+        candidate_groups = [
+            [key for key in sorted(val_metrics) if key.startswith("val-aux/") and "/reward/mean@1" in key],
+            [key for key in sorted(val_metrics) if "/reward/mean@1" in key],
+            [key for key in sorted(val_metrics) if key.startswith("val-core/") and "/acc/mean@1" in key],
+            [key for key in sorted(val_metrics) if "/acc/mean@1" in key],
+        ]
+        for candidates in candidate_groups:
+            if candidates:
+                metric_name = candidates[0]
+                return metric_name, float(val_metrics[metric_name])
+        return None
+
+    def _maybe_get_best_checkpoint_candidate(self, val_metrics: dict[str, Any]) -> tuple[str, float] | None:
+        if not self.config.trainer.get("save_best_checkpoint", False):
+            return None
+
+        metric = self._select_best_checkpoint_metric(val_metrics)
+        if metric is None:
+            return None
+
+        metric_name, metric_value = metric
+        if self._best_checkpoint_metric_value is None or metric_value > self._best_checkpoint_metric_value:
+            return metric_name, metric_value
+        return None
+
+    def _update_best_checkpoint(self, source_checkpoint_dir: str, metric_name: str, metric_value: float) -> None:
+        best_dirname = self.config.trainer.get("best_checkpoint_dirname", "best_reward_checkpoint")
+        best_checkpoint_dir = os.path.join(self.config.trainer.default_local_dir, best_dirname)
+        best_checkpoint_tmp_dir = f"{best_checkpoint_dir}.tmp"
+
+        shutil.rmtree(best_checkpoint_tmp_dir, ignore_errors=True)
+        shutil.copytree(source_checkpoint_dir, best_checkpoint_tmp_dir)
+
+        best_info = {
+            "global_step": int(self.global_steps),
+            "metric_name": metric_name,
+            "metric_value": float(metric_value),
+            "source_checkpoint": source_checkpoint_dir,
+        }
+        with open(os.path.join(best_checkpoint_tmp_dir, "best_checkpoint.json"), "w") as f:
+            json.dump(best_info, f, indent=2, sort_keys=True)
+
+        shutil.rmtree(best_checkpoint_dir, ignore_errors=True)
+        os.replace(best_checkpoint_tmp_dir, best_checkpoint_dir)
+
+        self._best_checkpoint_metric_name = metric_name
+        self._best_checkpoint_metric_value = float(metric_value)
+        self._best_checkpoint_global_step = int(self.global_steps)
+        print(
+            "Updated best checkpoint at "
+            f"{best_checkpoint_dir} using {metric_name}={metric_value:.6f} at step {self.global_steps}"
+        )
 
     def _load_checkpoint(self):
         if self.config.trainer.resume_mode == "disable":
@@ -1288,6 +1356,9 @@ class RayPPOTrainer:
         )
 
         self.global_steps = 0
+        self._best_checkpoint_metric_name = None
+        self._best_checkpoint_metric_value = None
+        self._best_checkpoint_global_step = None
 
         # load checkpoint before doing anything
         self._load_checkpoint()
@@ -1301,6 +1372,11 @@ class RayPPOTrainer:
             assert val_metrics, f"{val_metrics=}"
             pprint(f"Initial validation metrics: {val_metrics}")
             logger.log(data=val_metrics, step=self.global_steps)
+            initial_best_checkpoint_candidate = self._maybe_get_best_checkpoint_candidate(val_metrics)
+            if initial_best_checkpoint_candidate is not None:
+                saved_checkpoint_dir = self._save_checkpoint()
+                metric_name, metric_value = initial_best_checkpoint_candidate
+                self._update_best_checkpoint(saved_checkpoint_dir, metric_name, metric_value)
             if self.config.trainer.get("val_only", False):
                 return
 
@@ -1559,6 +1635,7 @@ class RayPPOTrainer:
                         self._log_rollout_data(batch, reward_extra_infos_dict, timing_raw, rollout_data_dir)
 
                 # validate
+                best_checkpoint_candidate = None
                 if (
                     self.val_reward_fn is not None
                     and self.config.trainer.test_freq > 0
@@ -1569,6 +1646,7 @@ class RayPPOTrainer:
                         if is_last_step:
                             last_val_metrics = val_metrics
                     metrics.update(val_metrics)
+                    best_checkpoint_candidate = self._maybe_get_best_checkpoint_candidate(val_metrics)
 
                 # Check if the ESI (Elastic Server Instance)/training plan is close to expiration.
                 esi_close_to_expiration = should_save_ckpt_esi(
@@ -1582,13 +1660,22 @@ class RayPPOTrainer:
                 # 2. It's the last training step.
                 # 3. The current step number is a multiple of the save frequency.
                 # 4. The ESI(Elastic Server Instance)/training plan is close to expiration.
-                if self.config.trainer.save_freq > 0 and (
-                    is_last_step or self.global_steps % self.config.trainer.save_freq == 0 or esi_close_to_expiration
-                ):
+                should_save_checkpoint = best_checkpoint_candidate is not None or (
+                    self.config.trainer.save_freq > 0
+                    and (
+                        is_last_step
+                        or self.global_steps % self.config.trainer.save_freq == 0
+                        or esi_close_to_expiration
+                    )
+                )
+                if should_save_checkpoint:
                     if esi_close_to_expiration:
                         print("Force saving checkpoint: ESI instance expiration approaching.")
                     with marked_timer("save_checkpoint", timing_raw, color="green"):
-                        self._save_checkpoint()
+                        saved_checkpoint_dir = self._save_checkpoint()
+                    if best_checkpoint_candidate is not None:
+                        metric_name, metric_value = best_checkpoint_candidate
+                        self._update_best_checkpoint(saved_checkpoint_dir, metric_name, metric_value)
 
                 with marked_timer("stop_profile", timing_raw):
                     next_step_profile = (
@@ -1616,6 +1703,7 @@ class RayPPOTrainer:
                 )
                 # collect metrics
                 metrics.update(compute_data_metrics(batch=batch, use_critic=self.use_critic))
+                metrics.update(compute_reward_extra_metrics(reward_extra_infos_dict))
                 metrics.update(compute_timing_metrics(batch=batch, timing_raw=timing_raw))
                 # TODO: implement actual tflpo and theoretical tflpo
                 n_gpus = self.resource_pool_manager.get_n_gpus()

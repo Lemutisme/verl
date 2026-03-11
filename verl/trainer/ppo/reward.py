@@ -57,6 +57,53 @@ async def _call_with_kwargs_async(raw_fn, extra_kwargs, *args, **kwargs):
     return await raw_fn(*args, **merged_kwargs)
 
 
+def _wrap_reward_fn_with_kwargs(raw_fn, extra_kwargs):
+    """Bind extra keyword arguments to a reward function without changing its call sites."""
+    if not extra_kwargs:
+        return raw_fn
+
+    target_fn = getattr(raw_fn, "func", raw_fn)
+    if inspect.iscoroutinefunction(target_fn):
+        return partial(_call_with_kwargs_async, raw_fn, extra_kwargs)
+    return partial(_call_with_kwargs, raw_fn, extra_kwargs)
+
+
+def _split_reward_kwargs_for_manager(
+    reward_manager_cls: type[Any], reward_kwargs: dict[str, Any]
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Split kwargs between reward-manager init kwargs and compute-score kwargs.
+
+    Managers like `naive` and `prime` do not accept arbitrary kwargs, while `default_compute_score`
+    does. Managers like `dapo` explicitly accept `**reward_kwargs` and forward them during scoring.
+    """
+    if not reward_kwargs:
+        return {}, {}
+
+    init_signature = inspect.signature(reward_manager_cls.__init__)
+    parameters = init_signature.parameters
+    accepts_var_kwargs = any(param.kind == inspect.Parameter.VAR_KEYWORD for param in parameters.values())
+    if accepts_var_kwargs:
+        return dict(reward_kwargs), {}
+
+    reserved_names = {"self", "tokenizer", "num_examine", "compute_score", "reward_fn_key", "config"}
+    accepted_names = {
+        name
+        for name, param in parameters.items()
+        if name not in reserved_names
+        and param.kind in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
+    }
+
+    manager_kwargs = {}
+    compute_score_kwargs = {}
+    for name, value in reward_kwargs.items():
+        if name in accepted_names:
+            manager_kwargs[name] = value
+        else:
+            compute_score_kwargs[name] = value
+
+    return manager_kwargs, compute_score_kwargs
+
+
 def get_custom_reward_fn(config: DictConfig) -> Optional[RawRewardFn]:
     """Load and return a custom reward function from external file.
 
@@ -153,6 +200,9 @@ def load_reward_manager(
         else:
             final_compute_score = default_compute_score
 
+    manager_kwargs, compute_score_kwargs = _split_reward_kwargs_for_manager(reward_manager_cls, reward_kwargs)
+    final_compute_score = _wrap_reward_fn_with_kwargs(final_compute_score, compute_score_kwargs)
+
     # Instantiate and return the reward manager with the specified parameters
     # RewardManagerBase subclasses (like RateLimitedRewardLoopManager) don't accept num_examine
     # while AbstractRewardManager subclasses (like NaiveRewardManager) do
@@ -162,7 +212,7 @@ def load_reward_manager(
             config=config,
             tokenizer=tokenizer,
             compute_score=final_compute_score,
-            **reward_kwargs,
+            **manager_kwargs,
         )
     else:
         # Traditional AbstractRewardManager-based managers
@@ -171,7 +221,7 @@ def load_reward_manager(
             num_examine=num_examine,
             compute_score=final_compute_score,
             reward_fn_key=config.data.reward_fn_key,
-            **reward_kwargs,
+            **manager_kwargs,
         )
 
 
