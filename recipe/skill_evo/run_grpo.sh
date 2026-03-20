@@ -1,5 +1,108 @@
 #!/usr/bin/env bash
-set -xeuo pipefail
+set -euo pipefail
+
+usage() {
+  cat <<'EOF'
+Usage:
+  bash run_grpo.sh -reward {ori|new|pd} -model {qwen3-4b|qwen3-8b|deepseek7b|custom} [options]
+
+Options:
+  -reward, --reward         Reward preset: ori, new, pd
+  -model, --model           Model preset: qwen3-4b, qwen3-8b, deepseek7b, custom
+  -mode, --mode             Alias of -model
+  -kl, --kl                 KL mode: loss, reward, none
+  -kl-coef, --kl-coef       KL coefficient; default 0.001
+  -kl-type, --kl-type       KL estimator type; default low_var_kl for loss, kl for reward
+  -model-id, --model-id     Override the Hugging Face model id directly
+  -name, --name             Optional run name suffix; default is timestamp + pid
+  -gpus, --gpus             Override CUDA_VISIBLE_DEVICES for this run
+  -h, --help                Show this help message
+
+Examples:
+  bash run_grpo.sh -reward ori -model qwen3-4b
+  bash run_grpo.sh -reward new -model qwen3-8b -kl none -gpus 2,3 -name ablation_a
+  bash run_grpo.sh -reward pd -model deepseek7b -kl reward -kl-coef 0.001
+  bash run_grpo.sh -reward pd -model custom -model-id Qwen/Qwen3-30B-A3B-Instruct-2507
+EOF
+}
+
+lower() {
+  printf '%s' "$1" | tr '[:upper:]' '[:lower:]'
+}
+
+sanitize_token() {
+  printf '%s' "$1" \
+    | tr '[:upper:]' '[:lower:]' \
+    | sed -E 's#[^a-z0-9._-]+#-#g; s#-+#-#g; s#(^-|-$)##g'
+}
+
+REWARD_KIND=${REWARD_KIND:-"pd"}
+MODEL_PRESET=${MODEL_PRESET:-${MODEL_MODE:-"qwen3-4b"}}
+KL_MODE=${KL_MODE:-"loss"}
+RUN_NAME=${RUN_NAME:-""}
+CLI_MODEL_ID=""
+CLI_CUDA_VISIBLE_DEVICES=""
+CLI_KL_COEF=""
+CLI_KL_TYPE=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -reward|--reward)
+      [[ $# -ge 2 ]] || { echo "Missing value for $1" >&2; usage; exit 1; }
+      REWARD_KIND="$2"
+      shift 2
+      ;;
+    -model|--model|-mode|--mode)
+      [[ $# -ge 2 ]] || { echo "Missing value for $1" >&2; usage; exit 1; }
+      MODEL_PRESET="$2"
+      shift 2
+      ;;
+    -kl|--kl)
+      [[ $# -ge 2 ]] || { echo "Missing value for $1" >&2; usage; exit 1; }
+      KL_MODE="$2"
+      shift 2
+      ;;
+    -kl-coef|--kl-coef)
+      [[ $# -ge 2 ]] || { echo "Missing value for $1" >&2; usage; exit 1; }
+      CLI_KL_COEF="$2"
+      shift 2
+      ;;
+    -kl-type|--kl-type)
+      [[ $# -ge 2 ]] || { echo "Missing value for $1" >&2; usage; exit 1; }
+      CLI_KL_TYPE="$2"
+      shift 2
+      ;;
+    -model-id|--model-id)
+      [[ $# -ge 2 ]] || { echo "Missing value for $1" >&2; usage; exit 1; }
+      CLI_MODEL_ID="$2"
+      shift 2
+      ;;
+    -name|--name|--run-name)
+      [[ $# -ge 2 ]] || { echo "Missing value for $1" >&2; usage; exit 1; }
+      RUN_NAME="$2"
+      shift 2
+      ;;
+    -gpus|--gpus)
+      [[ $# -ge 2 ]] || { echo "Missing value for $1" >&2; usage; exit 1; }
+      CLI_CUDA_VISIBLE_DEVICES="$2"
+      shift 2
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "Unknown argument: $1" >&2
+      usage
+      exit 1
+      ;;
+  esac
+done
+
+if [[ -n "${CLI_MODEL_ID}" ]]; then
+  MODEL_ID="${CLI_MODEL_ID}"
+  MODEL_PRESET="custom"
+fi
 
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 CONDA_SH=${CONDA_SH:-"/shared/nas2/yujiz/anaconda3/etc/profile.d/conda.sh"}
@@ -9,13 +112,186 @@ source "${CONDA_SH}"
 conda activate verl
 set -u
 
+REWARD_KIND=$(lower "${REWARD_KIND}")
+MODEL_PRESET=$(lower "${MODEL_PRESET}")
+KL_MODE=$(lower "${KL_MODE}")
+
+case "${REWARD_KIND}" in
+  ori|original)
+    RUN_VARIANT="ori"
+    REWARD_LABEL="ori"
+    REWARD_DEFAULT_GPU=0
+    DEEPCODER_REWARD_MODE=${DEEPCODER_REWARD_MODE:-"action_thought"}
+    DEEPCODER_USE_PRIMAL_DUAL=${DEEPCODER_USE_PRIMAL_DUAL:-false}
+    DEEPCODER_ENABLE_THOUGHT=${DEEPCODER_ENABLE_THOUGHT:-false}
+    DEEPCODER_BETA=${DEEPCODER_BETA:-0.0}
+    DEEPCODER_GAMMA=${DEEPCODER_GAMMA:-0.0}
+    ;;
+  new|new_reward)
+    RUN_VARIANT="new_reward"
+    REWARD_LABEL="new"
+    REWARD_DEFAULT_GPU=1
+    DEEPCODER_REWARD_MODE=${DEEPCODER_REWARD_MODE:-"action_thought"}
+    DEEPCODER_USE_PRIMAL_DUAL=${DEEPCODER_USE_PRIMAL_DUAL:-false}
+    DEEPCODER_ENABLE_THOUGHT=${DEEPCODER_ENABLE_THOUGHT:-true}
+    DEEPCODER_BETA=${DEEPCODER_BETA:-1.0}
+    DEEPCODER_GAMMA=${DEEPCODER_GAMMA:-1.0}
+    ;;
+  pd|primal_dual|pd_reward)
+    RUN_VARIANT="pd_reward"
+    REWARD_LABEL="pd"
+    REWARD_DEFAULT_GPU=2
+    DEEPCODER_REWARD_MODE=${DEEPCODER_REWARD_MODE:-"primal_dual"}
+    DEEPCODER_USE_PRIMAL_DUAL=${DEEPCODER_USE_PRIMAL_DUAL:-true}
+    DEEPCODER_ENABLE_THOUGHT=${DEEPCODER_ENABLE_THOUGHT:-true}
+    DEEPCODER_BETA=${DEEPCODER_BETA:-1.0}
+    DEEPCODER_GAMMA=${DEEPCODER_GAMMA:-1.0}
+    ;;
+  *)
+    echo "Unsupported reward preset: ${REWARD_KIND}" >&2
+    usage
+    exit 1
+    ;;
+esac
+
+DEEPCODER_PERF_GATE=${DEEPCODER_PERF_GATE:-0.0}
+
+case "${KL_MODE}" in
+  none|off|false|no)
+    KL_LABEL="kl0"
+    USE_KL_LOSS=${USE_KL_LOSS:-false}
+    USE_KL_IN_REWARD=${USE_KL_IN_REWARD:-false}
+    KL_LOSS_COEF=${KL_LOSS_COEF:-0.0}
+    KL_LOSS_TYPE=${KL_LOSS_TYPE:-"low_var_kl"}
+    KL_PENALTY=${KL_PENALTY:-"kl"}
+    KL_CTRL_TYPE=${KL_CTRL_TYPE:-"fixed"}
+    KL_CTRL_COEF=${KL_CTRL_COEF:-0.0}
+    KL_CTRL_TARGET=${KL_CTRL_TARGET:-0.1}
+    KL_CTRL_HORIZON=${KL_CTRL_HORIZON:-10000}
+    ;;
+  loss|actor|actor_loss)
+    KL_LABEL="klloss"
+    USE_KL_LOSS=${USE_KL_LOSS:-true}
+    USE_KL_IN_REWARD=${USE_KL_IN_REWARD:-false}
+    KL_LOSS_COEF=${KL_LOSS_COEF:-0.001}
+    KL_LOSS_TYPE=${KL_LOSS_TYPE:-"low_var_kl"}
+    KL_PENALTY=${KL_PENALTY:-"kl"}
+    KL_CTRL_TYPE=${KL_CTRL_TYPE:-"fixed"}
+    KL_CTRL_COEF=${KL_CTRL_COEF:-0.001}
+    KL_CTRL_TARGET=${KL_CTRL_TARGET:-0.1}
+    KL_CTRL_HORIZON=${KL_CTRL_HORIZON:-10000}
+    ;;
+  reward|in_reward|reward_penalty)
+    KL_LABEL="klreward"
+    USE_KL_LOSS=${USE_KL_LOSS:-false}
+    USE_KL_IN_REWARD=${USE_KL_IN_REWARD:-true}
+    KL_LOSS_COEF=${KL_LOSS_COEF:-0.0}
+    KL_LOSS_TYPE=${KL_LOSS_TYPE:-"low_var_kl"}
+    KL_PENALTY=${KL_PENALTY:-"kl"}
+    KL_CTRL_TYPE=${KL_CTRL_TYPE:-"fixed"}
+    KL_CTRL_COEF=${KL_CTRL_COEF:-0.001}
+    KL_CTRL_TARGET=${KL_CTRL_TARGET:-0.1}
+    KL_CTRL_HORIZON=${KL_CTRL_HORIZON:-10000}
+    ;;
+  *)
+    echo "Unsupported KL mode: ${KL_MODE}" >&2
+    usage
+    exit 1
+    ;;
+esac
+
+if [[ -n "${CLI_KL_COEF}" ]]; then
+  case "${KL_MODE}" in
+    loss|actor|actor_loss)
+      KL_LOSS_COEF="${CLI_KL_COEF}"
+      ;;
+    reward|in_reward|reward_penalty)
+      KL_CTRL_COEF="${CLI_KL_COEF}"
+      ;;
+  esac
+fi
+
+if [[ -n "${CLI_KL_TYPE}" ]]; then
+  case "${KL_MODE}" in
+    loss|actor|actor_loss)
+      KL_LOSS_TYPE="${CLI_KL_TYPE}"
+      ;;
+    reward|in_reward|reward_penalty)
+      KL_PENALTY="${CLI_KL_TYPE}"
+      ;;
+  esac
+fi
+
+case "${MODEL_PRESET}" in
+  qwen3-4b|qwen-4b|4b)
+    MODEL_ID=${MODEL_ID:-"Qwen/Qwen3-4B-Instruct-2507"}
+    MODEL_LABEL="Qwen3-4B"
+    ;;
+  qwen3-8b|qwen-8b|8b)
+    MODEL_ID=${MODEL_ID:-"Qwen/Qwen3-8B"}
+    MODEL_LABEL="Qwen3-8B"
+    ;;
+  deepseek7b|deepseek-7b|ds7b|7b)
+    MODEL_ID=${MODEL_ID:-"deepseek-ai/deepseek-llm-7b-chat"}
+    MODEL_LABEL="DeepSeek-7B"
+    ;;
+  custom)
+    if [[ -z "${MODEL_ID:-}" ]]; then
+      echo "-model custom requires -model-id or MODEL_ID" >&2
+      exit 1
+    fi
+    MODEL_LABEL="$(basename "${MODEL_ID}")"
+    ;;
+  *)
+    echo "Unsupported model preset: ${MODEL_PRESET}" >&2
+    usage
+    exit 1
+    ;;
+esac
+
+MODEL_TAG=$(sanitize_token "${MODEL_LABEL}")
+RUN_INSTANCE=${RUN_INSTANCE:-"$(date +%Y%m%d_%H%M%S)_pid$$"}
+RUN_INSTANCE_TAG=$(sanitize_token "${RUN_INSTANCE}")
+RUN_NAME=${RUN_NAME:-""}
+RUN_TAG=$(sanitize_token "${RUN_NAME}")
+
+if [[ -n "${CLI_CUDA_VISIBLE_DEVICES}" ]]; then
+  DEFAULT_CUDA_VISIBLE_DEVICES="${CLI_CUDA_VISIBLE_DEVICES}"
+fi
+
 ############################################
 # 0) GPU pinning (set BEFORE Ray)
 ############################################
-RUN_VARIANT=${RUN_VARIANT:-"base"}
-CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-${DEFAULT_CUDA_VISIBLE_DEVICES:-7}}
+DEFAULT_CUDA_VISIBLE_DEVICES=${DEFAULT_CUDA_VISIBLE_DEVICES:-${REWARD_DEFAULT_GPU}}
+CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-${DEFAULT_CUDA_VISIBLE_DEVICES}}
 export CUDA_VISIBLE_DEVICES
+export RUN_VARIANT
+
+TRACE=${TRACE:-1}
+if [[ "${TRACE}" == "1" ]]; then
+  set -x
+fi
+
 echo "[INFO] RUN_VARIANT=${RUN_VARIANT}"
+echo "[INFO] REWARD_KIND=${REWARD_KIND}"
+echo "[INFO] MODEL_PRESET=${MODEL_PRESET}"
+echo "[INFO] MODEL_ID=${MODEL_ID}"
+echo "[INFO] KL_MODE=${KL_MODE}"
+echo "[INFO] KL_LABEL=${KL_LABEL}"
+echo "[INFO] USE_KL_LOSS=${USE_KL_LOSS}"
+echo "[INFO] USE_KL_IN_REWARD=${USE_KL_IN_REWARD}"
+if [[ "${USE_KL_LOSS}" == "true" ]]; then
+  echo "[INFO] KL_LOSS_COEF=${KL_LOSS_COEF}"
+  echo "[INFO] KL_LOSS_TYPE=${KL_LOSS_TYPE}"
+fi
+if [[ "${USE_KL_IN_REWARD}" == "true" ]]; then
+  echo "[INFO] KL_CTRL_TYPE=${KL_CTRL_TYPE}"
+  echo "[INFO] KL_CTRL_COEF=${KL_CTRL_COEF}"
+  echo "[INFO] KL_PENALTY=${KL_PENALTY}"
+  echo "[INFO] KL_CTRL_TARGET=${KL_CTRL_TARGET}"
+  echo "[INFO] KL_CTRL_HORIZON=${KL_CTRL_HORIZON}"
+fi
+echo "[INFO] RUN_NAME=${RUN_NAME}"
 echo "[INFO] CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES}"
 
 export CUDA_DEVICE_ORDER=PCI_BUS_ID
@@ -41,8 +317,12 @@ SKIP_SANDBOX_HEALTHCHECK=${SKIP_SANDBOX_HEALTHCHECK:-0}
 # 1) Experiment config
 ############################################
 PROJECT_NAME=${PROJECT_NAME:-"deepcoder_grpo"}
-EXP_NAME=${EXP_NAME:-"GRPO-DeepCoder-Qwen3-4B-${RUN_VARIANT}"}
-MODEL_ID=${MODEL_ID:-"Qwen/Qwen3-4B-Instruct-2507"}
+if [[ -n "${RUN_TAG}" ]]; then
+  DEFAULT_EXP_NAME="grpo-${MODEL_TAG}-${REWARD_LABEL}-${KL_LABEL}-${RUN_TAG}-${RUN_INSTANCE_TAG}"
+else
+  DEFAULT_EXP_NAME="grpo-${MODEL_TAG}-${REWARD_LABEL}-${KL_LABEL}-${RUN_INSTANCE_TAG}"
+fi
+EXP_NAME=${EXP_NAME:-"${DEFAULT_EXP_NAME}"}
 
 ADV_ESTIMATOR=${ADV_ESTIMATOR:-"grpo"}
 
@@ -51,13 +331,7 @@ SAVE_EVERY_STEPS=${SAVE_EVERY_STEPS:-30}
 TOTAL_EPOCHS=${TOTAL_EPOCHS:-30}
 SAVE_BEST_CHECKPOINT=${SAVE_BEST_CHECKPOINT:-true}
 BEST_CHECKPOINT_DIRNAME=${BEST_CHECKPOINT_DIRNAME:-"best_reward_checkpoint"}
-
-DEEPCODER_REWARD_MODE=${DEEPCODER_REWARD_MODE:-"primal_dual"}
-DEEPCODER_USE_PRIMAL_DUAL=${DEEPCODER_USE_PRIMAL_DUAL:-false}
-DEEPCODER_ENABLE_THOUGHT=${DEEPCODER_ENABLE_THOUGHT:-true}
-DEEPCODER_BETA=${DEEPCODER_BETA:-1.0}
-DEEPCODER_GAMMA=${DEEPCODER_GAMMA:-1.0}
-DEEPCODER_PERF_GATE=${DEEPCODER_PERF_GATE:-0.0}
+BEST_CHECKPOINT_METRIC=${BEST_CHECKPOINT_METRIC:-"auto"}
 
 VLLM_GPU_UTIL=${VLLM_GPU_UTIL:-0.30}
 VLLM_MAX_NUM_SEQS=${VLLM_MAX_NUM_SEQS:-64}
@@ -89,18 +363,34 @@ RAY_DATA_HOME=${RAY_DATA_HOME:-"/shared/nas2/yujiz/rl/data"}
 
 CKPTS_ROOT=${CKPTS_ROOT:-"/shared/nas2/yujiz/rl/checkpoints"}
 CKPTS_DIR="${CKPTS_ROOT}/${PROJECT_NAME}/${EXP_NAME}"
+ALLOW_EXISTING_EXP_DIR=${ALLOW_EXISTING_EXP_DIR:-0}
+if [[ -d "${CKPTS_DIR}" ]] && find "${CKPTS_DIR}" -mindepth 1 -maxdepth 1 -print -quit | grep -q .; then
+  if [[ "${ALLOW_EXISTING_EXP_DIR}" != "1" ]]; then
+    echo "[ERROR] Existing experiment directory is not empty: ${CKPTS_DIR}" >&2
+    echo "[ERROR] Choose a different -name/EXP_NAME/RUN_INSTANCE, or set ALLOW_EXISTING_EXP_DIR=1 if you really want reuse." >&2
+    exit 1
+  fi
+fi
 mkdir -p "${CKPTS_DIR}"
+
+RAY_TMP_ROOT=${RAY_TMP_ROOT:-"/tmp/ray_u/${USER:-user}"}
+RAY_TMP_TAG=${RAY_TMP_TAG:-"$(date +%m%d%H%M%S)_$$"}
+RAY_TMPDIR=${RAY_TMPDIR:-"${RAY_TMP_ROOT}/${RAY_TMP_TAG}"}
+mkdir -p "${RAY_TMPDIR}"
+if [[ ${#RAY_TMPDIR} -gt 40 ]]; then
+  echo "[WARN] RAY_TMPDIR is ${#RAY_TMPDIR} chars: ${RAY_TMPDIR}" >&2
+  echo "[WARN] Keep it short, otherwise Ray may hit the AF_UNIX 107-byte socket path limit." >&2
+fi
 
 HF_HOME=${HF_HOME:-"${RAY_DATA_HOME}/hf_cache"}
 export HF_HOME
 export HF_HUB_CACHE="${HF_HOME}"
 
-# DeepCoder Data
 TRAIN_FILE=${TRAIN_FILE:-"${RAY_DATA_HOME}/math/deepcoder_codeforces_train.parquet"}
 VAL_FILE=${VAL_FILE:-"${RAY_DATA_HOME}/math/deepcoder_codeforces_val.parquet"}
 
-# Using Tensorboard
 TENSORBOARD_DIR="${CKPTS_DIR}/tensorboard"
+TRAIN_LOG_PATH="${CKPTS_DIR}/train.log"
 export TENSORBOARD_DIR
 mkdir -p "${TENSORBOARD_DIR}"
 
@@ -271,14 +561,15 @@ export SANDBOX_FUSION_URL
 ensure_sandbox_fusion
 
 echo "[INFO] CKPTS_DIR=${CKPTS_DIR}"
+echo "[INFO] TRAIN_LOG_PATH=${TRAIN_LOG_PATH}"
 echo "[INFO] TENSORBOARD_DIR=${TENSORBOARD_DIR}"
+echo "[INFO] RAY_TMPDIR=${RAY_TMPDIR}"
 if [[ -n "${RAY_ADDRESS}" ]]; then
   echo "[INFO] RAY_ADDRESS=${RAY_ADDRESS}"
   echo "[INFO] Using existing Ray cluster via ray.init(address=...)"
 else
   echo "[INFO] RAY_ADDRESS is unset; verl will start a local Ray runtime via ray.init()."
 fi
-echo "[INFO] DEEPCODER_REWARD_MODE=${DEEPCODER_REWARD_MODE}"
 echo "[INFO] SANDBOX_PORT=${SANDBOX_PORT}"
 echo "[INFO] SANDBOX_FUSION_URL=${SANDBOX_FUSION_URL}"
 echo "[INFO] EVAL_EVERY_STEPS=${EVAL_EVERY_STEPS}"
@@ -293,9 +584,10 @@ ACTOR_MAX_TOKENS=$((MAX_PROMPT_LENGTH + MAX_RESPONSE_LENGTH))
 RAY_INIT_ARGS=()
 if [[ -n "${RAY_ADDRESS}" ]]; then
   RAY_INIT_ARGS+=(++ray_kwargs.ray_init.address="${RAY_ADDRESS}")
+else
+  RAY_INIT_ARGS+=(++ray_kwargs.ray_init._temp_dir="${RAY_TMPDIR}")
 fi
 
-# Note: Using python3 -m verl.trainer.main_ppo for standard GRPO
 CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES} python3 -m verl.trainer.main_ppo \
   data.train_files="${TRAIN_FILE}" \
   data.val_files="${VAL_FILE}" \
@@ -332,6 +624,9 @@ CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES} python3 -m verl.trainer.main_ppo \
   actor_rollout_ref.ref.fsdp_config.param_offload="${OFFLOAD}" \
   actor_rollout_ref.actor.fsdp_config.fsdp_size="${FSDP_SIZE}" \
   actor_rollout_ref.ref.fsdp_config.fsdp_size="${FSDP_SIZE}" \
+  actor_rollout_ref.actor.use_kl_loss="${USE_KL_LOSS}" \
+  actor_rollout_ref.actor.kl_loss_coef="${KL_LOSS_COEF}" \
+  actor_rollout_ref.actor.kl_loss_type="${KL_LOSS_TYPE}" \
   reward_model.reward_manager=naive \
   +reward_model.sandbox_fusion.url="${SANDBOX_FUSION_URL}" \
   ++reward_model.reward_kwargs.deepcoder_reward_mode="${DEEPCODER_REWARD_MODE}" \
@@ -340,6 +635,12 @@ CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES} python3 -m verl.trainer.main_ppo \
   ++reward_model.reward_kwargs.beta="${DEEPCODER_BETA}" \
   ++reward_model.reward_kwargs.gamma="${DEEPCODER_GAMMA}" \
   ++reward_model.reward_kwargs.perf_gate="${DEEPCODER_PERF_GATE}" \
+  algorithm.use_kl_in_reward="${USE_KL_IN_REWARD}" \
+  algorithm.kl_penalty="${KL_PENALTY}" \
+  algorithm.kl_ctrl.type="${KL_CTRL_TYPE}" \
+  algorithm.kl_ctrl.kl_coef="${KL_CTRL_COEF}" \
+  algorithm.kl_ctrl.target_kl="${KL_CTRL_TARGET}" \
+  algorithm.kl_ctrl.horizon="${KL_CTRL_HORIZON}" \
   "${RAY_INIT_ARGS[@]}" \
   trainer.logger="['console','tensorboard']" \
   trainer.project_name="${PROJECT_NAME}" \
@@ -355,5 +656,6 @@ CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES} python3 -m verl.trainer.main_ppo \
   trainer.resume_mode="disable" \
   ++trainer.save_best_checkpoint="${SAVE_BEST_CHECKPOINT}" \
   ++trainer.best_checkpoint_dirname="${BEST_CHECKPOINT_DIRNAME}" \
+  ++trainer.best_checkpoint_metric="${BEST_CHECKPOINT_METRIC}" \
   trainer.default_hdfs_dir=null \
-  2>&1 | tee "${CKPTS_DIR}/train.log"
+  2>&1 | tee "${TRAIN_LOG_PATH}"
