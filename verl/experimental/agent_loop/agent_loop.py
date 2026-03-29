@@ -540,11 +540,20 @@ class AgentLoopWorkerBase:
         #   e.g., [0,0,0,0,0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,0,0,0,0]
 
         # TODO(wuxibin): remove padding and use tensordict.
+        # Manually truncate before padding since tokenizer.pad() does not support truncation.
+        prompt_max_len = self.config.actor_rollout_ref.rollout.prompt_length
+        response_max_len = self.config.actor_rollout_ref.rollout.response_length
+
+        # Truncate prompt from the left (keep the tail) to match left-padding convention.
+        prompt_ids = output.prompt_ids
+        if isinstance(prompt_ids, list) and len(prompt_ids) > prompt_max_len:
+            prompt_ids = prompt_ids[-prompt_max_len:]
+
         self.tokenizer.padding_side = "left"
         prompt_output = self.tokenizer.pad(
-            {"input_ids": output.prompt_ids},
+            {"input_ids": prompt_ids},
             padding="max_length",
-            max_length=self.config.actor_rollout_ref.rollout.prompt_length,
+            max_length=prompt_max_len,
             return_tensors="pt",
             return_attention_mask=True,
         )
@@ -552,11 +561,16 @@ class AgentLoopWorkerBase:
             prompt_output["input_ids"] = prompt_output["input_ids"].unsqueeze(0)
             prompt_output["attention_mask"] = prompt_output["attention_mask"].unsqueeze(0)
 
+        # Truncate response from the right (keep the head).
+        response_ids = output.response_ids
+        if isinstance(response_ids, list) and len(response_ids) > response_max_len:
+            response_ids = response_ids[:response_max_len]
+
         self.tokenizer.padding_side = "right"
         response_output = self.tokenizer.pad(
-            {"input_ids": output.response_ids},
+            {"input_ids": response_ids},
             padding="max_length",
-            max_length=self.config.actor_rollout_ref.rollout.response_length,
+            max_length=response_max_len,
             return_tensors="pt",
             return_attention_mask=True,
         )
@@ -564,10 +578,15 @@ class AgentLoopWorkerBase:
             response_output["input_ids"] = response_output["input_ids"].unsqueeze(0)
             response_output["attention_mask"] = response_output["attention_mask"].unsqueeze(0)
 
+        # Truncate response_mask to match response truncation.
+        response_mask = output.response_mask
+        if isinstance(response_mask, list) and len(response_mask) > response_max_len:
+            response_mask = response_mask[:response_max_len]
+
         response_mask_output = self.tokenizer.pad(
-            {"input_ids": output.response_mask},
+            {"input_ids": response_mask},
             padding="max_length",
-            max_length=self.config.actor_rollout_ref.rollout.response_length,
+            max_length=response_max_len,
             return_tensors="pt",
             return_attention_mask=False,
         )

@@ -124,7 +124,7 @@ def combine_reward(S_perf: float, S_thought: float, S_action: float, beta: float
         r = 1.0
     return float(r)
 
-def _run_deepcoder_eval(code: str, inputs: List[str], expected_outputs: List[str], timeout_s: int = 10, sandbox_url: str = "http://localhost:8000/run") -> Tuple[int, int, str]:
+def _run_deepcoder_eval(code: str, inputs: List[str], expected_outputs: List[str], timeout_s: int = 10, sandbox_url: str = "http://localhost:8000/run", concurrent_semaphore=None) -> Tuple[int, int, str]:
     if not inputs:
         return 0, 0, "no_tests"
 
@@ -137,7 +137,8 @@ def _run_deepcoder_eval(code: str, inputs: List[str], expected_outputs: List[str
         generation=code,
         timeout=timeout_s,
         memory_limit_mb=1024,
-        language="python"
+        language="python",
+        concurrent_semaphore=concurrent_semaphore,
     )
     
     passed = sum(1 for r in results if r is True)
@@ -154,6 +155,7 @@ def compute_score_deepcoder(sample_or_solution: dict, ground_truth: Any = None, 
     enable_thought = bool(kwargs.get("enable_thought", True))
     perf_gate = float(kwargs.get("perf_gate", 0.0))
     sandbox_url = kwargs.get("sandbox_url") or "http://localhost:8080/sandbox"  # allow explicit None to fall back
+    concurrent_semaphore = kwargs.get("concurrent_semaphore", None)
 
     # Disable action trace for DeepCoder initially because the remote sandbox doesn't return AST trace sums
     # Would need custom sandbox modifications to support tracing
@@ -173,7 +175,7 @@ def compute_score_deepcoder(sample_or_solution: dict, ground_truth: Any = None, 
 
     def _score_one(resp: str) -> Dict[str, float]:
         code = _extract_code(str(resp))
-        passed, total, _ = _run_deepcoder_eval(code, inputs, expected_outputs, timeout_s, sandbox_url)
+        passed, total, _ = _run_deepcoder_eval(code, inputs, expected_outputs, timeout_s, sandbox_url, concurrent_semaphore=concurrent_semaphore)
         S_perf = 0.0 if total == 0 else float(passed) / float(total)
         S_thought = 0.0
         S_action = 0.0

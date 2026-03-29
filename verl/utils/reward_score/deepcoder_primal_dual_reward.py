@@ -173,8 +173,8 @@ def _build_cfg(kwargs: Dict[str, Any]) -> PrimalDualConfig:
     cfg.ema_alpha = _clip(cfg.ema_alpha, 0.0, 1.0)
     return cfg
 
-def _compute_components(code: str, inputs: List[str], outputs: List[str], cfg: PrimalDualConfig) -> Tuple[float, float, float]:
-    passed, total, _ = _run_deepcoder_eval(code, inputs, outputs, timeout_s=cfg.timeout_s, sandbox_url=cfg.sandbox_url)
+def _compute_components(code: str, inputs: List[str], outputs: List[str], cfg: PrimalDualConfig, concurrent_semaphore=None) -> Tuple[float, float, float]:
+    passed, total, _ = _run_deepcoder_eval(code, inputs, outputs, timeout_s=cfg.timeout_s, sandbox_url=cfg.sandbox_url, concurrent_semaphore=concurrent_semaphore)
     s_perf = 0.0 if total == 0 else float(passed) / float(total)
 
     if s_perf <= cfg.perf_gate:
@@ -240,6 +240,7 @@ def compute_score_deepcoder(
     sample_or_solution: Union[Dict[str, Any], str], ground_truth: Any = None, **kwargs
 ) -> Union[float, Dict[str, float], List[float]]:
     cfg = _build_cfg(kwargs)
+    concurrent_semaphore = kwargs.get("concurrent_semaphore", None)
     if cfg.reset_dual_state:
         reset_primal_dual_state()
 
@@ -264,7 +265,7 @@ def compute_score_deepcoder(
         actions = []
         for resp in responses:
             code = _extract_code(str(resp))
-            s_perf, s_thought, s_action = _compute_components(code, inputs, expected_outputs, cfg)
+            s_perf, s_thought, s_action = _compute_components(code, inputs, expected_outputs, cfg, concurrent_semaphore=concurrent_semaphore)
             perfs.append(s_perf)
             thoughts.append(s_thought)
             actions.append(s_action)

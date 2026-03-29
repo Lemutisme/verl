@@ -141,7 +141,7 @@ nohup bash -lc "
   cd '${SANDBOX_FUSION_ROOT}' &&
   export SANDBOX_CONFIG='${SANDBOX_CONFIG_NAME}' &&
   export PYTHONUNBUFFERED=1 &&
-  exec '${SANDBOX_SERVICE_PYTHON}' -m uvicorn sandbox.server.server:app --host '${SANDBOX_HOST}' --port '${SANDBOX_PORT}'
+  exec '${SANDBOX_SERVICE_PYTHON}' -m uvicorn sandbox.server.server:app --host '${SANDBOX_HOST}' --port '${SANDBOX_PORT}' --workers 4
 " >"${SANDBOX_LOG_PATH}" 2>&1 &
 echo $! > "${SANDBOX_PID_FILE}"
 printf '%s\n' "${SANDBOX_FUSION_URL}" > "${SANDBOX_URL_FILE}"
