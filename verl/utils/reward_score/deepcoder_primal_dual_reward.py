@@ -10,6 +10,7 @@ from .deepcoder_action_thought_reward import (
     compute_action_score_from_sums,
     compute_thought_score,
 )
+from .deepcoder_codeql_robust_reward import compute_codeql_robustness, normalize_codeql_scalar
 
 @dataclass
 class PrimalDualState:
@@ -57,6 +58,15 @@ class PrimalDualConfig:
     dual_update_on_gated: bool = False
     normalize_by_dual_mass: bool = False
     reset_dual_state: bool = False
+
+    enable_codeql_subreward: bool = True
+    codeql_subreward_weight: float = 0.10
+    codeql_subreward_threshold: float = 0.82
+    codeql_subreward_scale: float = 0.15
+    codeql_require_ok: bool = True
+    codeql_bin: str = ""
+    codeql_timeout_s: int = 120
+    codeql_workdir: str = ""
 
 
 _PD_STATE = PrimalDualState()
@@ -146,6 +156,14 @@ def _build_cfg(kwargs: Dict[str, Any]) -> PrimalDualConfig:
         dual_update_on_gated=_to_bool(kwargs.get("dual_update_on_gated", False), False),
         normalize_by_dual_mass=_to_bool(kwargs.get("normalize_by_dual_mass", False), False),
         reset_dual_state=_to_bool(kwargs.get("reset_dual_state", False), False),
+        enable_codeql_subreward=_to_bool(kwargs.get("enable_codeql_subreward", True), True),
+        codeql_subreward_weight=_to_float(kwargs.get("codeql_subreward_weight", 0.10), 0.10),
+        codeql_subreward_threshold=_to_float(kwargs.get("codeql_subreward_threshold", 0.82), 0.82),
+        codeql_subreward_scale=_to_float(kwargs.get("codeql_subreward_scale", 0.15), 0.15),
+        codeql_require_ok=_to_bool(kwargs.get("codeql_require_ok", True), True),
+        codeql_bin=str(kwargs.get("codeql_bin", "") or "").strip(),
+        codeql_timeout_s=_to_int(kwargs.get("codeql_timeout_s", 120), 120),
+        codeql_workdir=str(kwargs.get("codeql_workdir", "") or "").strip(),
     )
 
     cfg.perf_gate = _clip01(cfg.perf_gate)
@@ -171,10 +189,13 @@ def _build_cfg(kwargs: Dict[str, Any]) -> PrimalDualConfig:
     cfg.lambda_th_max = max(0.0, cfg.lambda_th_max)
     cfg.lambda_ac_max = max(0.0, cfg.lambda_ac_max)
     cfg.ema_alpha = _clip(cfg.ema_alpha, 0.0, 1.0)
+    cfg.codeql_subreward_weight = max(0.0, cfg.codeql_subreward_weight)
+    cfg.codeql_subreward_scale = max(1e-6, cfg.codeql_subreward_scale)
+    cfg.codeql_timeout_s = max(1, cfg.codeql_timeout_s)
     return cfg
 
-def _compute_components(code: str, inputs: List[str], outputs: List[str], cfg: PrimalDualConfig, concurrent_semaphore=None) -> Tuple[float, float, float]:
-    passed, total, _ = _run_deepcoder_eval(code, inputs, outputs, timeout_s=cfg.timeout_s, sandbox_url=cfg.sandbox_url, concurrent_semaphore=concurrent_semaphore)
+def _compute_components(code: str, inputs: List[str], outputs: List[str], cfg: PrimalDualConfig) -> Tuple[float, float, float]:
+    passed, total, _ = _run_deepcoder_eval(code, inputs, outputs, timeout_s=cfg.timeout_s, sandbox_url=cfg.sandbox_url)
     s_perf = 0.0 if total == 0 else float(passed) / float(total)
 
     if s_perf <= cfg.perf_gate:
@@ -240,7 +261,6 @@ def compute_score_deepcoder(
     sample_or_solution: Union[Dict[str, Any], str], ground_truth: Any = None, **kwargs
 ) -> Union[float, Dict[str, float], List[float]]:
     cfg = _build_cfg(kwargs)
-    concurrent_semaphore = kwargs.get("concurrent_semaphore", None)
     if cfg.reset_dual_state:
         reset_primal_dual_state()
 
@@ -263,9 +283,11 @@ def compute_score_deepcoder(
         perfs = []
         thoughts = []
         actions = []
+        codes = []
         for resp in responses:
             code = _extract_code(str(resp))
-            s_perf, s_thought, s_action = _compute_components(code, inputs, expected_outputs, cfg, concurrent_semaphore=concurrent_semaphore)
+            codes.append(code)
+            s_perf, s_thought, s_action = _compute_components(code, inputs, expected_outputs, cfg)
             perfs.append(s_perf)
             thoughts.append(s_thought)
             actions.append(s_action)
@@ -278,11 +300,47 @@ def compute_score_deepcoder(
             for sp, st, sa in zip(perfs, thoughts, actions)
         ]
 
+        codeql_scalars = [0.0] * len(rewards)
+        codeql_robust_scores = [0.0] * len(rewards)
+        codeql_subrewards = [0.0] * len(rewards)
+        codeql_nodes = [0] * len(rewards)
+        codeql_edges = [0] * len(rewards)
+        codeql_densities = [0.0] * len(rewards)
+        codeql_oks = [0.0] * len(rewards)
+
+        if cfg.enable_codeql_subreward:
+            for i, (sp, code) in enumerate(zip(perfs, codes)):
+                # Only add structural subreward when unit tests are fully passed.
+                if not (sp >= 1.0 - 1e-12):
+                    continue
+                codeql_res = compute_codeql_robustness(
+                    code=code,
+                    codeql_bin=cfg.codeql_bin,
+                    timeout_s=cfg.codeql_timeout_s,
+                    workdir=cfg.codeql_workdir or None,
+                )
+                codeql_oks[i] = 1.0 if codeql_res.ok else 0.0
+                codeql_scalars[i] = float(codeql_res.scalar)
+                codeql_nodes[i] = int(codeql_res.num_nodes)
+                codeql_edges[i] = int(codeql_res.num_edges)
+                codeql_densities[i] = float(codeql_res.density)
+
+                if codeql_res.ok or not cfg.codeql_require_ok:
+                    robust_score = normalize_codeql_scalar(
+                        codeql_res.scalar,
+                        threshold=cfg.codeql_subreward_threshold,
+                        scale=cfg.codeql_subreward_scale,
+                    )
+                    bonus = cfg.codeql_subreward_weight * robust_score
+                    rewards[i] = _clip01(rewards[i] + bonus)
+                    codeql_robust_scores[i] = float(robust_score)
+                    codeql_subrewards[i] = float(bonus)
+
         _update_duals(perfs, thoughts, actions, cfg)
         state = get_primal_dual_state()
 
         infos = []
-        for sp, st, sa, reward in zip(perfs, thoughts, actions, rewards):
+        for i, (sp, st, sa, reward) in enumerate(zip(perfs, thoughts, actions, rewards)):
             infos.append(
                 {
                     "score": float(reward),
@@ -291,6 +349,15 @@ def compute_score_deepcoder(
                     "original_reward": float(sp),
                     "thought_reward": float(st),
                     "action_reward": float(sa),
+                    "codeql_subreward": float(codeql_subrewards[i]),
+                    "codeql_robust_score": float(codeql_robust_scores[i]),
+                    "codeql_robust_scalar": float(codeql_scalars[i]),
+                    "codeql_subreward_weight": float(cfg.codeql_subreward_weight),
+                    "codeql_subreward_applied": float(1.0 if codeql_subrewards[i] > 0.0 else 0.0),
+                    "codeql_ok": float(codeql_oks[i]),
+                    "codeql_nodes": float(codeql_nodes[i]),
+                    "codeql_edges": float(codeql_edges[i]),
+                    "codeql_density": float(codeql_densities[i]),
                     "lambda_thought": float(lambda_th),
                     "lambda_action": float(lambda_ac),
                     "tau_thought": float(tau_th),
