@@ -340,7 +340,7 @@ ADV_ESTIMATOR=${ADV_ESTIMATOR:-"grpo"}
 
 EVAL_EVERY_STEPS=${EVAL_EVERY_STEPS:-${EVAL_EVERY_EPOCHS:-30}}
 SAVE_EVERY_STEPS=${SAVE_EVERY_STEPS:-30}
-TOTAL_EPOCHS=${TOTAL_EPOCHS:-30}
+TOTAL_EPOCHS=${TOTAL_EPOCHS:-10}
 SAVE_BEST_CHECKPOINT=${SAVE_BEST_CHECKPOINT:-true}
 BEST_CHECKPOINT_DIRNAME=${BEST_CHECKPOINT_DIRNAME:-"best_reward_checkpoint"}
 BEST_CHECKPOINT_METRIC=${BEST_CHECKPOINT_METRIC:-"auto"}
@@ -351,8 +351,8 @@ VLLM_MAX_NUM_SEQS=${VLLM_MAX_NUM_SEQS:-64}
 MAX_PROMPT_LENGTH=${MAX_PROMPT_LENGTH:-1024}
 MAX_RESPONSE_LENGTH=${MAX_RESPONSE_LENGTH:-1024}
 
-TRAIN_PROMPT_BSZ=${TRAIN_PROMPT_BSZ:-2}
-GEN_PROMPT_BSZ=${GEN_PROMPT_BSZ:-8}
+TRAIN_PROMPT_BSZ=${TRAIN_PROMPT_BSZ:-1}
+GEN_PROMPT_BSZ=${GEN_PROMPT_BSZ:-4}
 N_RESP_PER_PROMPT=${N_RESP_PER_PROMPT:-2}
 TRAIN_PROMPT_MINI_BSZ=${TRAIN_PROMPT_MINI_BSZ:-1}
 
@@ -398,8 +398,8 @@ HF_HOME=${HF_HOME:-"${RAY_DATA_HOME}/hf_cache"}
 export HF_HOME
 export HF_HUB_CACHE="${HF_HOME}"
 
-TRAIN_FILE=${TRAIN_FILE:-"${RAY_DATA_HOME}/math/deepcoder_codeforces_train.parquet"}
-VAL_FILE=${VAL_FILE:-"${RAY_DATA_HOME}/math/deepcoder_codeforces_val.parquet"}
+TRAIN_FILE="${RAY_DATA_HOME}/math/deepcoder_full_train.parquet"
+VAL_FILE="${RAY_DATA_HOME}/math/deepcoder_full_val.parquet"
 
 TENSORBOARD_DIR="${CKPTS_DIR}/tensorboard"
 TRAIN_LOG_PATH="${CKPTS_DIR}/train.log"
@@ -541,6 +541,8 @@ ensure_sandbox_fusion() {
   local sandbox_state_dir="${CKPTS_DIR}/sandbox_fusion"
   mkdir -p "${sandbox_state_dir}"
 
+  export SANDBOX_PID_FILE="${sandbox_state_dir}/sandbox_fusion.pid"
+
   SANDBOX_FUSION_URL="$(
     SANDBOX_FUSION_ROOT="${SANDBOX_FUSION_ROOT}" \
     SANDBOX_SERVICE_ENV="${SANDBOX_SERVICE_ENV}" \
@@ -551,7 +553,7 @@ ensure_sandbox_fusion() {
     SANDBOX_START_TIMEOUT_S="${SANDBOX_START_TIMEOUT_S}" \
     SANDBOX_STATE_DIR="${sandbox_state_dir}" \
     SANDBOX_LOG_PATH="${sandbox_state_dir}/sandbox_fusion.log" \
-    SANDBOX_PID_FILE="${sandbox_state_dir}/sandbox_fusion.pid" \
+    SANDBOX_PID_FILE="${SANDBOX_PID_FILE}" \
     SANDBOX_URL_FILE="${sandbox_state_dir}/sandbox_fusion.url" \
     "${SCRIPT_DIR}/start_sandbox_fusion.sh"
   )"
@@ -571,6 +573,19 @@ export SANDBOX_PORT
 export SANDBOX_FUSION_URL
 
 ensure_sandbox_fusion
+
+cleanup_sandbox() {
+  if [[ -n "${SANDBOX_PID_FILE:-}" ]] && [[ -f "${SANDBOX_PID_FILE}" ]]; then
+    local pid=$(cat "${SANDBOX_PID_FILE}")
+    if [[ -n "${pid}" ]] && ps -p "${pid}" >/dev/null 2>&1; then
+      echo "[INFO] Cleaning up local sandbox_fusion process tree (root=${pid})..." >&2
+      # Kill child workers first (uvicorn --workers forks children), then parent
+      pkill -9 -P "${pid}" 2>/dev/null || true
+      kill -9 "${pid}" 2>/dev/null || true
+    fi
+  fi
+}
+trap cleanup_sandbox EXIT
 
 echo "[INFO] CKPTS_DIR=${CKPTS_DIR}"
 echo "[INFO] TRAIN_LOG_PATH=${TRAIN_LOG_PATH}"
@@ -678,4 +693,5 @@ CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES} python3 -m verl.trainer.main_ppo \
   ++trainer.best_checkpoint_dirname="${BEST_CHECKPOINT_DIRNAME}" \
   ++trainer.best_checkpoint_metric="${BEST_CHECKPOINT_METRIC}" \
   trainer.default_hdfs_dir=null \
+  trainer.validation_data_dir="${CKPTS_DIR}/val_logs" \
   2>&1 | tee "${TRAIN_LOG_PATH}"
