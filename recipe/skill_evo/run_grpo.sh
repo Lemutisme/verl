@@ -155,6 +155,14 @@ case "${REWARD_KIND}" in
 esac
 
 DEEPCODER_PERF_GATE=${DEEPCODER_PERF_GATE:-0.0}
+DEEPCODER_ENABLE_CODEQL_SUBREWARD=${DEEPCODER_ENABLE_CODEQL_SUBREWARD:-true}
+DEEPCODER_CODEQL_SUBREWARD_WEIGHT=${DEEPCODER_CODEQL_SUBREWARD_WEIGHT:-0.10}
+DEEPCODER_CODEQL_SUBREWARD_THRESHOLD=${DEEPCODER_CODEQL_SUBREWARD_THRESHOLD:-0.82}
+DEEPCODER_CODEQL_SUBREWARD_SCALE=${DEEPCODER_CODEQL_SUBREWARD_SCALE:-0.15}
+DEEPCODER_CODEQL_REQUIRE_OK=${DEEPCODER_CODEQL_REQUIRE_OK:-true}
+DEEPCODER_CODEQL_TIMEOUT_S=${DEEPCODER_CODEQL_TIMEOUT_S:-120}
+DEEPCODER_CODEQL_BIN=${DEEPCODER_CODEQL_BIN:-""}
+DEEPCODER_CODEQL_WORKDIR=${DEEPCODER_CODEQL_WORKDIR:-""}
 
 case "${KL_MODE}" in
   none|off|false|no)
@@ -280,6 +288,10 @@ echo "[INFO] KL_MODE=${KL_MODE}"
 echo "[INFO] KL_LABEL=${KL_LABEL}"
 echo "[INFO] USE_KL_LOSS=${USE_KL_LOSS}"
 echo "[INFO] USE_KL_IN_REWARD=${USE_KL_IN_REWARD}"
+echo "[INFO] DEEPCODER_ENABLE_CODEQL_SUBREWARD=${DEEPCODER_ENABLE_CODEQL_SUBREWARD}"
+echo "[INFO] DEEPCODER_CODEQL_SUBREWARD_WEIGHT=${DEEPCODER_CODEQL_SUBREWARD_WEIGHT}"
+echo "[INFO] DEEPCODER_CODEQL_SUBREWARD_THRESHOLD=${DEEPCODER_CODEQL_SUBREWARD_THRESHOLD}"
+echo "[INFO] DEEPCODER_CODEQL_SUBREWARD_SCALE=${DEEPCODER_CODEQL_SUBREWARD_SCALE}"
 if [[ "${USE_KL_LOSS}" == "true" ]]; then
   echo "[INFO] KL_LOSS_COEF=${KL_LOSS_COEF}"
   echo "[INFO] KL_LOSS_TYPE=${KL_LOSS_TYPE}"
@@ -650,6 +662,14 @@ CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES} python3 -m verl.trainer.main_ppo \
   ++reward_model.reward_kwargs.beta="${DEEPCODER_BETA}" \
   ++reward_model.reward_kwargs.gamma="${DEEPCODER_GAMMA}" \
   ++reward_model.reward_kwargs.perf_gate="${DEEPCODER_PERF_GATE}" \
+  ++reward_model.reward_kwargs.enable_codeql_subreward="${DEEPCODER_ENABLE_CODEQL_SUBREWARD}" \
+  ++reward_model.reward_kwargs.codeql_subreward_weight="${DEEPCODER_CODEQL_SUBREWARD_WEIGHT}" \
+  ++reward_model.reward_kwargs.codeql_subreward_threshold="${DEEPCODER_CODEQL_SUBREWARD_THRESHOLD}" \
+  ++reward_model.reward_kwargs.codeql_subreward_scale="${DEEPCODER_CODEQL_SUBREWARD_SCALE}" \
+  ++reward_model.reward_kwargs.codeql_require_ok="${DEEPCODER_CODEQL_REQUIRE_OK}" \
+  ++reward_model.reward_kwargs.codeql_timeout_s="${DEEPCODER_CODEQL_TIMEOUT_S}" \
+  ++reward_model.reward_kwargs.codeql_bin="${DEEPCODER_CODEQL_BIN}" \
+  ++reward_model.reward_kwargs.codeql_workdir="${DEEPCODER_CODEQL_WORKDIR}" \
   algorithm.use_kl_in_reward="${USE_KL_IN_REWARD}" \
   algorithm.kl_penalty="${KL_PENALTY}" \
   algorithm.kl_ctrl.type="${KL_CTRL_TYPE}" \

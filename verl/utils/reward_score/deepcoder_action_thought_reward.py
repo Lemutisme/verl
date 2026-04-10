@@ -7,6 +7,8 @@ import ast
 import math
 from collections import defaultdict
 
+from .deepcoder_codeql_robust_reward import compute_codeql_robustness, normalize_codeql_scalar
+
 # Reuse the sandbox execution wrapper from sandbox_fusion
 # (Assuming sandbox_fusion/utils.py is available in verl.utils.reward_score)
 from verl.utils.reward_score.sandbox_fusion.utils import check_correctness, DEFAULT_TIMEOUT
@@ -124,6 +126,15 @@ def combine_reward(S_perf: float, S_thought: float, S_action: float, beta: float
         r = 1.0
     return float(r)
 
+def _to_bool(v: Any, default: bool = False) -> bool:
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, (int, float)):
+        return bool(v)
+    if isinstance(v, str):
+        return v.strip().lower() in {"1", "true", "t", "yes", "y", "on"}
+    return default
+
 def _run_deepcoder_eval(code: str, inputs: List[str], expected_outputs: List[str], timeout_s: int = 10, sandbox_url: str = "http://localhost:8000/run", concurrent_semaphore=None) -> Tuple[int, int, str]:
     if not inputs:
         return 0, 0, "no_tests"
@@ -157,6 +168,28 @@ def compute_score_deepcoder(sample_or_solution: dict, ground_truth: Any = None, 
     sandbox_url = kwargs.get("sandbox_url") or "http://localhost:8080/sandbox"  # allow explicit None to fall back
     concurrent_semaphore = kwargs.get("concurrent_semaphore", None)
 
+    enable_codeql_subreward = _to_bool(kwargs.get("enable_codeql_subreward", True), True)
+    codeql_subreward_weight = max(0.0, float(kwargs.get("codeql_subreward_weight", 0.10)))
+    codeql_subreward_threshold = float(kwargs.get("codeql_subreward_threshold", 0.82))
+    codeql_subreward_scale = max(1e-6, float(kwargs.get("codeql_subreward_scale", 0.15)))
+    codeql_require_ok = _to_bool(kwargs.get("codeql_require_ok", True), True)
+    codeql_timeout_s = max(1, int(kwargs.get("codeql_timeout_s", 120)))
+    codeql_bin = str(kwargs.get("codeql_bin", "") or "").strip()
+    codeql_workdir = kwargs.get("codeql_workdir", None)
+    if isinstance(codeql_workdir, str):
+        codeql_workdir = codeql_workdir.strip() or None
+
+    enable_codeql_subreward = _to_bool(kwargs.get("enable_codeql_subreward", True), True)
+    codeql_subreward_weight = max(0.0, float(kwargs.get("codeql_subreward_weight", 0.10)))
+    codeql_subreward_threshold = float(kwargs.get("codeql_subreward_threshold", 0.82))
+    codeql_subreward_scale = max(1e-6, float(kwargs.get("codeql_subreward_scale", 0.15)))
+    codeql_require_ok = _to_bool(kwargs.get("codeql_require_ok", True), True)
+    codeql_timeout_s = max(1, int(kwargs.get("codeql_timeout_s", 120)))
+    codeql_bin = str(kwargs.get("codeql_bin", "") or "").strip()
+    codeql_workdir = kwargs.get("codeql_workdir", None)
+    if isinstance(codeql_workdir, str):
+        codeql_workdir = codeql_workdir.strip() or None
+
     # Disable action trace for DeepCoder initially because the remote sandbox doesn't return AST trace sums
     # Would need custom sandbox modifications to support tracing
     enable_action = False 
@@ -179,20 +212,62 @@ def compute_score_deepcoder(sample_or_solution: dict, ground_truth: Any = None, 
         S_perf = 0.0 if total == 0 else float(passed) / float(total)
         S_thought = 0.0
         S_action = 0.0
+        base_reward = 0.0
         final_reward = 0.0
+        codeql_scalar = 0.0
+        codeql_robust_score = 0.0
+        codeql_bonus = 0.0
+        codeql_ok = False
+        codeql_nodes = 0
+        codeql_edges = 0
+        codeql_density = 0.0
 
         if S_perf > perf_gate:
             S_thought = compute_thought_score(code, M_top=M_top, w1=w1, w2=w2) if enable_thought else 0.0
             S_action = 0.0  # Disabled tracing inside remote sandbox for now
-            final_reward = combine_reward(S_perf, S_thought, S_action, beta=beta, gamma=gamma)
+            base_reward = combine_reward(S_perf, S_thought, S_action, beta=beta, gamma=gamma)
+            final_reward = base_reward
+
+        is_full_pass = total > 0 and passed == total
+        if enable_codeql_subreward and is_full_pass:
+            codeql_res = compute_codeql_robustness(
+                code=code,
+                codeql_bin=codeql_bin,
+                timeout_s=codeql_timeout_s,
+                workdir=codeql_workdir,
+            )
+            codeql_ok = bool(codeql_res.ok)
+            codeql_scalar = float(codeql_res.scalar)
+            codeql_nodes = int(codeql_res.num_nodes)
+            codeql_edges = int(codeql_res.num_edges)
+            codeql_density = float(codeql_res.density)
+
+            if codeql_ok or not codeql_require_ok:
+                codeql_robust_score = normalize_codeql_scalar(
+                    codeql_scalar,
+                    threshold=codeql_subreward_threshold,
+                    scale=codeql_subreward_scale,
+                )
+                codeql_bonus = codeql_subreward_weight * codeql_robust_score
+                final_reward = min(1.0, max(0.0, final_reward + codeql_bonus))
 
         return {
             "score": float(final_reward),
             "combined_reward": float(final_reward),
+            "base_reward": float(base_reward),
             "acc": float(S_perf),
             "original_reward": float(S_perf),
             "thought_reward": float(S_thought),
             "action_reward": float(S_action),
+            "codeql_subreward": float(codeql_bonus),
+            "codeql_robust_score": float(codeql_robust_score),
+            "codeql_robust_scalar": float(codeql_scalar),
+            "codeql_subreward_weight": float(codeql_subreward_weight),
+            "codeql_subreward_applied": float(1.0 if codeql_bonus > 0.0 else 0.0),
+            "codeql_ok": float(1.0 if codeql_ok else 0.0),
+            "codeql_nodes": float(codeql_nodes),
+            "codeql_edges": float(codeql_edges),
+            "codeql_density": float(codeql_density),
         }
 
     if isinstance(sample.get("responses", None), list):
