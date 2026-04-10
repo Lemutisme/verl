@@ -14,7 +14,9 @@
 
 import asyncio
 import logging
+import multiprocessing
 import os
+from functools import partial
 
 import aiohttp
 import numpy as np
@@ -28,12 +30,34 @@ from verl.single_controller.ray.base import RayResourcePool
 from verl.trainer.ppo.reward import get_custom_reward_fn
 from verl.utils import hf_tokenizer
 from verl.utils.fs import copy_to_local
+from verl.utils.reward_score import default_compute_score
 
 from .reward_manager import get_reward_manager_cls
 from .reward_model import RewardModelManager
 
 logger = logging.getLogger(__file__)
 logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))
+
+
+def _build_reward_score_fn(config: DictConfig, compute_score=None):
+    if compute_score is not None:
+        return compute_score, None, None
+
+    sandbox_config = config.reward_model.get("sandbox_fusion")
+    sandbox_url = sandbox_config.get("url") if sandbox_config else None
+    if not sandbox_url:
+        return default_compute_score, None, None
+
+    memory_limit_mb = sandbox_config.get("memory_limit_mb", 1024)
+    sandbox_manager = multiprocessing.Manager()
+    concurrent_semaphore = sandbox_manager.Semaphore(sandbox_config.get("max_concurrent", 64))
+    compute_score = partial(
+        default_compute_score,
+        sandbox_fusion_url=sandbox_url,
+        concurrent_semaphore=concurrent_semaphore,
+        memory_limit_mb=memory_limit_mb,
+    )
+    return compute_score, sandbox_manager, concurrent_semaphore
 
 
 @ray.remote
@@ -68,7 +92,10 @@ class RewardLoopWorker:
         if self.config.reward_model.enable:
             reward_model_tokenizer_local_path = copy_to_local(self.config.reward_model.model.path)
             self.reward_model_tokenizer = hf_tokenizer(reward_model_tokenizer_local_path, trust_remote_code=True)
-        self.reward_fn = get_custom_reward_fn(self.config)
+        custom_reward_fn = get_custom_reward_fn(self.config)
+        self.reward_fn, self._sandbox_manager, self._sandbox_semaphore = _build_reward_score_fn(
+            self.config, custom_reward_fn
+        )
 
         # Load reward loop manager class
         # Support both registry and importlib loading methods

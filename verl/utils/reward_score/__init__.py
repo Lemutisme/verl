@@ -71,6 +71,20 @@ def default_compute_score(
             from . import mbpp_action_thought_reward as mbpp
 
         res = mbpp.compute_score_mbpp(solution_str, ground_truth, **kwargs)
+    elif data_source.startswith("deepcoder"):
+        deepcoder_mode = str(kwargs.get("deepcoder_reward_mode", "primal_dual")).strip().lower()
+        use_primal_dual = kwargs.get("deepcoder_use_primal_dual", kwargs.get("deepcoder_primal_dual", False))
+        if isinstance(use_primal_dual, str):
+            use_primal_dual = use_primal_dual.strip().lower() in {"1", "true", "t", "yes", "y", "on"}
+        else:
+            use_primal_dual = bool(use_primal_dual)
+
+        if deepcoder_mode in {"primal_dual", "pd"} or use_primal_dual:
+            from . import deepcoder_primal_dual_reward as deepcoder
+        else:
+            from . import deepcoder_action_thought_reward as deepcoder
+            
+        res = deepcoder.compute_score_deepcoder(solution_str, ground_truth, sandbox_url=sandbox_fusion_url, concurrent_semaphore=concurrent_semaphore, **kwargs)
     elif data_source in ["lighteval/MATH", "DigitalLearningGmbH/MATH-lighteval", "HuggingFaceH4/MATH-500"]:
         from . import math_reward
 

@@ -26,7 +26,7 @@ import requests
 DEFAULT_TIMEOUT = 10  # Default compile and run timeout
 MAX_RETRIES = 3
 INITIAL_RETRY_DELAY = 1
-API_TIMEOUT = 10
+API_TIMEOUT = 30
 
 logger = logging.getLogger(__name__)
 
@@ -153,6 +153,14 @@ def call_sandbox_api(
             )  # <-- Use internal log_prefix
             return response.json(), None
 
+        except requests.exceptions.Timeout as e:
+            last_error = f"{log_prefix}API Request Timeout on attempt {attempt + 1}/{MAX_RETRIES}: {e}"
+            logger.warning(last_error)
+            if attempt < MAX_RETRIES - 1:
+                delay = INITIAL_RETRY_DELAY * (attempt + 1)
+                logger.info(f"{log_prefix}Retrying after {delay} seconds...")
+                time.sleep(delay)
+            continue
         except requests.exceptions.RequestException as e:
             last_error = f"{log_prefix}API Request Error: {e}"  # <-- Use internal log_prefix
             break  # Exit retry loop on non-504 request errors
@@ -506,8 +514,10 @@ def check_correctness(
 
     first_compile_error_index = -1
 
-    # max_workers is limited by sandbox_fusion_max_concurrent from concurrent_semaphore
-    with concurrent.futures.ThreadPoolExecutor(max_workers=max(32, os.cpu_count() * 5)) as executor:
+    # Cap thread pool to a sane limit. The old formula max(32, cpu_count*5) yields 640
+    # on a 128-core machine, which overwhelms the sandbox server with concurrent connections.
+    _max_pool = min(64, max(8, os.cpu_count() or 8))
+    with concurrent.futures.ThreadPoolExecutor(max_workers=_max_pool) as executor:
         # Submit all tasks, passing the concurrent_semaphore to _process_single_case
         future_to_index = {
             executor.submit(

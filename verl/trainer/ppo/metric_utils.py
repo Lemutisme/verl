@@ -224,6 +224,52 @@ def compute_data_metrics(batch: DataProto, use_critic: bool = True) -> dict[str,
     return metrics
 
 
+def compute_reward_extra_metrics(reward_extra_infos: dict[str, Any]) -> dict[str, Any]:
+    """Aggregate numeric reward extra info into train-time metrics.
+
+    Reward managers may return per-sample scalar diagnostics such as correctness,
+    thought/action scores, or primal-dual state. This helper summarizes those
+    diagnostics for logging while skipping non-numeric values.
+    """
+    metrics: dict[str, Any] = {}
+
+    for key, values in reward_extra_infos.items():
+        if key == "score":
+            # `score` is already covered by critic/score/* and reward tensor statistics.
+            continue
+
+        if values is None:
+            continue
+
+        arr = np.asarray(values)
+        if arr.size == 0:
+            continue
+
+        if np.issubdtype(arr.dtype, np.bool_):
+            arr = arr.astype(np.float64)
+        elif np.issubdtype(arr.dtype, np.number):
+            arr = arr.astype(np.float64)
+        else:
+            flat = []
+            convertible = True
+            for value in arr.reshape(-1):
+                if isinstance(value, (bool, np.bool_, int, float, np.integer, np.floating)):
+                    flat.append(float(value))
+                else:
+                    convertible = False
+                    break
+            if not convertible:
+                continue
+            arr = np.asarray(flat, dtype=np.float64)
+
+        arr = arr.reshape(-1)
+        metrics[f"reward_extra/{key}/mean"] = float(arr.mean())
+        metrics[f"reward_extra/{key}/max"] = float(arr.max())
+        metrics[f"reward_extra/{key}/min"] = float(arr.min())
+
+    return metrics
+
+
 def compute_timing_metrics(batch: DataProto, timing_raw: dict[str, float]) -> dict[str, Any]:
     """
     Computes timing metrics for different processing stages in PPO training.
