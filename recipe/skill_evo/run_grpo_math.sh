@@ -8,7 +8,7 @@ Usage:
 
 Options:
   -dataset, --dataset       Dataset preset: gsm8k, deepscalar, general365, openr1 (default: gsm8k)
-  -model, --model           Model preset: qwen3-4b, qwen3-8b, deepseek7b, custom
+  -model, --model           Model preset: qwen3-4b, qwen3-8b, deepseek-r1-1.5b, deepseek7b, custom
   -mode, --mode             Alias of -model
   -kl, --kl                 KL mode: loss, reward, none
   -kl-coef, --kl-coef       KL coefficient; default 0.001
@@ -31,6 +31,7 @@ sanitize_token() {
 }
 
 DATASET=${DATASET:-"gsm8k"}
+REWARD_KIND=${REWARD_KIND:-"none"}
 MODEL_PRESET=${MODEL_PRESET:-${MODEL_MODE:-"qwen3-4b"}}
 KL_MODE=${KL_MODE:-"loss"}
 RUN_NAME=${RUN_NAME:-""}
@@ -41,6 +42,11 @@ CLI_KL_TYPE=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    -reward|--reward)
+      [[ $# -ge 2 ]] || { echo "Missing value for $1" >&2; usage; exit 1; }
+      REWARD_KIND="$2"
+      shift 2
+      ;;
     -dataset|--dataset)
       [[ $# -ge 2 ]] || { echo "Missing value for $1" >&2; usage; exit 1; }
       DATASET="$2"
@@ -130,6 +136,19 @@ case "${DATASET}" in
     ;;
 esac
 
+REWARD_KIND=$(lower "${REWARD_KIND}")
+case "${REWARD_KIND}" in
+  new|new_reward)
+    COMBINE_MODE="multiplier"
+    ;;
+  pd|primal_dual|pd_reward)
+    COMBINE_MODE="pd"
+    ;;
+  *)
+    COMBINE_MODE="none"
+    ;;
+esac
+
 case "${KL_MODE}" in
   none|off|false|no)
     KL_LABEL="kl0"
@@ -209,6 +228,10 @@ case "${MODEL_PRESET}" in
     MODEL_ID=${MODEL_ID:-"deepseek-ai/deepseek-llm-7b-chat"}
     MODEL_LABEL="DeepSeek-7B"
     ;;
+  deepseek-r1-distill-qwen-1.5b|deepseek-r1-1.5b|r1-1.5b)
+    MODEL_ID=${MODEL_ID:-"deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B"}
+    MODEL_LABEL="DeepSeek-R1-Distill-Qwen-1.5B"
+    ;;
   custom)
     if [[ -z "${MODEL_ID:-}" ]]; then
       echo "-model custom requires -model-id or MODEL_ID" >&2
@@ -286,8 +309,8 @@ EXP_NAME=${EXP_NAME:-"${DEFAULT_EXP_NAME}"}
 
 ADV_ESTIMATOR=${ADV_ESTIMATOR:-"grpo"}
 
-EVAL_EVERY_STEPS=${EVAL_EVERY_STEPS:-${EVAL_EVERY_EPOCHS:-30}}
-SAVE_EVERY_STEPS=${SAVE_EVERY_STEPS:-30}
+EVAL_EVERY_STEPS=${EVAL_EVERY_STEPS:-5}
+SAVE_EVERY_STEPS=${SAVE_EVERY_STEPS:-5}
 TOTAL_EPOCHS=${TOTAL_EPOCHS:-10}
 SAVE_BEST_CHECKPOINT=${SAVE_BEST_CHECKPOINT:-true}
 BEST_CHECKPOINT_DIRNAME=${BEST_CHECKPOINT_DIRNAME:-"best_reward_checkpoint"}
@@ -459,6 +482,9 @@ CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES} python3 -m verl.trainer.main_ppo \
   actor_rollout_ref.actor.kl_loss_coef="${KL_LOSS_COEF}" \
   actor_rollout_ref.actor.kl_loss_type="${KL_LOSS_TYPE}" \
   reward_model.reward_manager=naive \
+  ++custom_reward_function.path="${SCRIPT_DIR}/custom_reward.py" \
+  ++custom_reward_function.name="compute_score" \
+  ++reward_model.reward_kwargs.combine_mode="${COMBINE_MODE}" \
   algorithm.use_kl_in_reward="${USE_KL_IN_REWARD}" \
   algorithm.kl_penalty="${KL_PENALTY}" \
   algorithm.kl_ctrl.type="${KL_CTRL_TYPE}" \
@@ -471,6 +497,7 @@ CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES} python3 -m verl.trainer.main_ppo \
   trainer.experiment_name="${EXP_NAME}" \
   trainer.n_gpus_per_node="${TRAIN_NGPUS_PER_NODE}" \
   trainer.nnodes="${NNODES}" \
+  ++trainer.val_before_train=true \
   trainer.save_freq="${SAVE_EVERY_STEPS}" \
   trainer.test_freq="${EVAL_EVERY_STEPS}" \
   trainer.total_epochs="${TOTAL_EPOCHS}" \

@@ -8,7 +8,7 @@ Usage:
 
 Options:
   -reward, --reward         Reward preset: ori, new, pd
-  -model, --model           Model preset: qwen3-4b, qwen3-8b, deepseek7b, custom
+  -model, --model           Model preset: qwen3-4b, qwen3-8b, deepseek-r1-1.5b, deepseek7b, custom
   -mode, --mode             Alias of -model
   -kl, --kl                 KL mode: loss, reward, none
   -kl-coef, --kl-coef       KL coefficient; default 0.001
@@ -121,8 +121,7 @@ case "${REWARD_KIND}" in
     RUN_VARIANT="ori"
     REWARD_LABEL="ori"
     REWARD_DEFAULT_GPU=0
-    DEEPCODER_REWARD_MODE=${DEEPCODER_REWARD_MODE:-"action_thought"}
-    DEEPCODER_USE_PRIMAL_DUAL=${DEEPCODER_USE_PRIMAL_DUAL:-false}
+    COMBINE_MODE="none"
     DEEPCODER_ENABLE_THOUGHT=${DEEPCODER_ENABLE_THOUGHT:-false}
     DEEPCODER_BETA=${DEEPCODER_BETA:-0.0}
     DEEPCODER_GAMMA=${DEEPCODER_GAMMA:-0.0}
@@ -131,8 +130,7 @@ case "${REWARD_KIND}" in
     RUN_VARIANT="new_reward"
     REWARD_LABEL="new"
     REWARD_DEFAULT_GPU=1
-    DEEPCODER_REWARD_MODE=${DEEPCODER_REWARD_MODE:-"action_thought"}
-    DEEPCODER_USE_PRIMAL_DUAL=${DEEPCODER_USE_PRIMAL_DUAL:-false}
+    COMBINE_MODE="multiplier"
     DEEPCODER_ENABLE_THOUGHT=${DEEPCODER_ENABLE_THOUGHT:-true}
     DEEPCODER_BETA=${DEEPCODER_BETA:-1.0}
     DEEPCODER_GAMMA=${DEEPCODER_GAMMA:-1.0}
@@ -141,8 +139,7 @@ case "${REWARD_KIND}" in
     RUN_VARIANT="pd_reward"
     REWARD_LABEL="pd"
     REWARD_DEFAULT_GPU=2
-    DEEPCODER_REWARD_MODE=${DEEPCODER_REWARD_MODE:-"primal_dual"}
-    DEEPCODER_USE_PRIMAL_DUAL=${DEEPCODER_USE_PRIMAL_DUAL:-true}
+    COMBINE_MODE="pd"
     DEEPCODER_ENABLE_THOUGHT=${DEEPCODER_ENABLE_THOUGHT:-true}
     DEEPCODER_BETA=${DEEPCODER_BETA:-1.0}
     DEEPCODER_GAMMA=${DEEPCODER_GAMMA:-1.0}
@@ -235,6 +232,10 @@ case "${MODEL_PRESET}" in
     MODEL_ID=${MODEL_ID:-"deepseek-ai/deepseek-llm-7b-chat"}
     MODEL_LABEL="DeepSeek-7B"
     ;;
+  deepseek-r1-distill-qwen-1.5b|deepseek-r1-1.5b|r1-1.5b)
+    MODEL_ID=${MODEL_ID:-"deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B"}
+    MODEL_LABEL="DeepSeek-R1-Distill-Qwen-1.5B"
+    ;;
   custom)
     if [[ -z "${MODEL_ID:-}" ]]; then
       echo "-model custom requires -model-id or MODEL_ID" >&2
@@ -326,8 +327,8 @@ EXP_NAME=${EXP_NAME:-"${DEFAULT_EXP_NAME}"}
 
 ADV_ESTIMATOR=${ADV_ESTIMATOR:-"grpo"}
 
-EVAL_EVERY_STEPS=${EVAL_EVERY_STEPS:-${EVAL_EVERY_EPOCHS:-30}}
-SAVE_EVERY_STEPS=${SAVE_EVERY_STEPS:-30}
+EVAL_EVERY_STEPS=${EVAL_EVERY_STEPS:-5}
+SAVE_EVERY_STEPS=${SAVE_EVERY_STEPS:-5}
 TOTAL_EPOCHS=${TOTAL_EPOCHS:-10}
 SAVE_BEST_CHECKPOINT=${SAVE_BEST_CHECKPOINT:-true}
 BEST_CHECKPOINT_DIRNAME=${BEST_CHECKPOINT_DIRNAME:-"best_reward_checkpoint"}
@@ -648,12 +649,13 @@ CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES} python3 -m verl.trainer.main_ppo \
   actor_rollout_ref.actor.kl_loss_coef="${KL_LOSS_COEF}" \
   actor_rollout_ref.actor.kl_loss_type="${KL_LOSS_TYPE}" \
   reward_model.reward_manager=naive \
+  ++custom_reward_function.path="${SCRIPT_DIR}/custom_reward.py" \
+  ++custom_reward_function.name="compute_score" \
   +reward_model.sandbox_fusion.url="${SANDBOX_FUSION_URL}" \
-  ++reward_model.reward_kwargs.deepcoder_reward_mode="${DEEPCODER_REWARD_MODE}" \
-  ++reward_model.reward_kwargs.deepcoder_use_primal_dual="${DEEPCODER_USE_PRIMAL_DUAL}" \
+  ++reward_model.reward_kwargs.combine_mode="${COMBINE_MODE}" \
   ++reward_model.reward_kwargs.enable_thought="${DEEPCODER_ENABLE_THOUGHT}" \
-  ++reward_model.reward_kwargs.beta="${DEEPCODER_BETA}" \
-  ++reward_model.reward_kwargs.gamma="${DEEPCODER_GAMMA}" \
+  ++reward_model.reward_kwargs.weight_thought="${DEEPCODER_BETA}" \
+  ++reward_model.reward_kwargs.weight_action="${DEEPCODER_GAMMA}" \
   ++reward_model.reward_kwargs.perf_gate="${DEEPCODER_PERF_GATE}" \
   algorithm.use_kl_in_reward="${USE_KL_IN_REWARD}" \
   algorithm.kl_penalty="${KL_PENALTY}" \
@@ -667,6 +669,7 @@ CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES} python3 -m verl.trainer.main_ppo \
   trainer.experiment_name="${EXP_NAME}" \
   trainer.n_gpus_per_node="${TRAIN_NGPUS_PER_NODE}" \
   trainer.nnodes="${NNODES}" \
+  ++trainer.val_before_train=true \
   trainer.save_freq="${SAVE_EVERY_STEPS}" \
   trainer.test_freq="${EVAL_EVERY_STEPS}" \
   trainer.total_epochs="${TOTAL_EPOCHS}" \

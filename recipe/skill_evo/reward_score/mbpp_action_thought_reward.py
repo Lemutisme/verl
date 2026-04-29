@@ -386,56 +386,63 @@ def compute_score_mbpp(
     # =========================
     # ADDED: score helper (keeps original evaluation logic)
     # =========================
-    def _score_one(resp: str) -> float:
+    def _score_one(resp: str) -> Dict[str, float]:
         code = _extract_code(str(resp))
 
         # correctness: ORIGINAL runner (unchanged)
         passed, total, _ = _run_mbpp_tests_in_subproc(code, tests, timeout_s=timeout_s)
         S_perf = 0.0 if total == 0 else float(passed) / float(total)
-
-        # correctness gate: do not run trace if not good enough
-        if S_perf <= perf_gate:
-            return 0.0
-
-        # thought: AST-only (fast)
-        if enable_thought:
-            S_thought = compute_thought_score(code, M_top=M_top, w1=w1, w2=w2)
-        else:
-            S_thought = 0.0
-
-        # action: trace in a separate subprocess (slow but isolated)
+        S_thought = 0.0
         S_action = 0.0
-        if enable_action:
-            revisit_sum, cost_sum, nt, trace_err = _run_mbpp_tests_in_subproc_trace(
-                code, tests, timeout_s=trace_timeout_s
-            )
-            if not trace_err:
-                S_action = compute_action_score_from_sums(
-                    revisit_sum=revisit_sum,
-                    cost_sum=cost_sum,
-                    nt=nt,
-                    u1=u1,
-                    u2=u2,
-                    kappa=kappa,
-                )
-            else:
-                S_action = 0.0
 
-        return combine_reward(S_perf, S_thought, S_action, beta=beta, gamma=gamma)
+        if S_perf > perf_gate:
+            if enable_thought:
+                S_thought = compute_thought_score(code, M_top=M_top, w1=w1, w2=w2)
+
+            if enable_action:
+                revisit_sum, cost_sum, nt, trace_err = _run_mbpp_tests_in_subproc_trace(
+                    code, tests, timeout_s=trace_timeout_s
+                )
+                if not trace_err:
+                    S_action = compute_action_score_from_sums(
+                        revisit_sum=revisit_sum,
+                        cost_sum=cost_sum,
+                        nt=nt,
+                        u1=u1,
+                        u2=u2,
+                        kappa=kappa,
+                    )
+
+        if kwargs.get("return_components", False):
+            return {"main_reward": S_perf, "subrewards": {"thought": S_thought, "action": S_action}}
+
+        final_reward = 0.0
+        if S_perf > perf_gate:
+            final_reward = combine_reward(S_perf, S_thought, S_action, beta=beta, gamma=gamma)
+
+        return {
+            "score": float(final_reward),
+            "combined_reward": float(final_reward),
+            "acc": float(S_perf),
+            "original_reward": float(S_perf),
+            "thought_reward": float(S_thought),
+            "action_reward": float(S_action),
+        }
 
     # Try common fields for generated text
-    # VERL里常见："responses" 是 list[str]
     if isinstance(sample.get("responses", None), list):
-        rewards: List[float] = []
-        for r in sample["responses"]:
-            # CHANGED: previously only correctness; now combined reward
-            rewards.append(_score_one(r))
-        return rewards
+        if kwargs.get("return_components", False):
+            return [_score_one(r) for r in sample["responses"]]
+        return [_score_one(r)["score"] for r in sample["responses"]]
 
     # Single response fallback
     for k in ("response", "completion", "output", "generated_text", "text"):
         if isinstance(sample.get(k, None), str) and sample[k].strip():
-            # CHANGED: previously only correctness; now combined reward
-            return _score_one(sample[k])
+            res = _score_one(sample[k])
+            if kwargs.get("return_components", False):
+                return res["main_reward"], res["subrewards"]
+            return res
 
+    if kwargs.get("return_components", False):
+        return 0.0, {"thought": 0.0, "action": 0.0}
     return 0.0

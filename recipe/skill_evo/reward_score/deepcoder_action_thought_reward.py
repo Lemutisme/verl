@@ -184,11 +184,15 @@ def compute_score_deepcoder(sample_or_solution: dict, ground_truth: Any = None, 
         S_perf = 0.0 if total == 0 else float(passed) / float(total)
         S_thought = 0.0
         S_action = 0.0
-        final_reward = 0.0
 
         if S_perf > perf_gate:
             S_thought = compute_thought_score(code, M_top=M_top, w1=w1, w2=w2) if enable_thought else 0.0
-            S_action = 0.0  # Disabled tracing inside remote sandbox for now
+
+        if kwargs.get("return_components", False):
+            return {"main_reward": S_perf, "subrewards": {"thought": S_thought, "action": S_action}}
+
+        final_reward = 0.0
+        if S_perf > perf_gate:
             final_reward = combine_reward(S_perf, S_thought, S_action, beta=beta, gamma=gamma)
 
         return {
@@ -201,10 +205,17 @@ def compute_score_deepcoder(sample_or_solution: dict, ground_truth: Any = None, 
         }
 
     if isinstance(sample.get("responses", None), list):
+        if kwargs.get("return_components", False):
+            return [_score_one(r) for r in sample["responses"]]
         return [_score_one(r)["score"] for r in sample["responses"]]
 
     for k in ("response", "completion", "output", "generated_text", "text"):
         if isinstance(sample.get(k, None), str) and sample[k].strip():
-            return _score_one(sample[k])
+            res = _score_one(sample[k])
+            if kwargs.get("return_components", False):
+                return res["main_reward"], res["subrewards"]
+            return res
 
+    if kwargs.get("return_components", False):
+        return 0.0, {"thought": 0.0, "action": 0.0}
     return 0.0
