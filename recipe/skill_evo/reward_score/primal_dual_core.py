@@ -129,7 +129,7 @@ class GenericRewardCombiner:
         for d in subrewards_list:
             new_keys.update(d.keys())
             
-        for name in new_keys:
+        for name in sorted(list(new_keys)):
             if name not in self.subreward_names:
                 with self._LOCK:
                     if name not in self.subreward_names:
