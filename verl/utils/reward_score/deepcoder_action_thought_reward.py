@@ -16,9 +16,14 @@ _CODEBLOCK_RE = re.compile(r"```(?:python)?\s*(.*?)```", re.DOTALL | re.IGNORECA
 def _extract_code(text: str) -> str:
     if not isinstance(text, str):
         return ""
+    # Try finding closed block first
     m = _CODEBLOCK_RE.search(text)
     if m:
         return m.group(1).strip()
+    # If no closed block is found, try finding an unclosed block
+    m_unclosed = re.search(r"```(?:python)?\s*(.*)", text, re.DOTALL | re.IGNORECASE)
+    if m_unclosed:
+        return m_unclosed.group(1).strip()
     return text.strip()
 
 def _get_tests_deepcoder(sample: Dict[str, Any]) -> Tuple[List[Any], List[Any]]:

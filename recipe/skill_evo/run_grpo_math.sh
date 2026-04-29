@@ -4,10 +4,10 @@ set -euo pipefail
 usage() {
   cat <<'EOF'
 Usage:
-  bash run_grpo.sh -reward {ori|new|pd} -model {qwen3-4b|qwen3-8b|deepseek7b|custom} [options]
+  bash run_grpo_math.sh -dataset {gsm8k|deepscalar} -model {qwen3-4b|qwen3-8b|deepseek7b|custom} [options]
 
 Options:
-  -reward, --reward         Reward preset: ori, new, pd
+  -dataset, --dataset       Dataset preset: gsm8k, deepscalar (default: gsm8k)
   -model, --model           Model preset: qwen3-4b, qwen3-8b, deepseek7b, custom
   -mode, --mode             Alias of -model
   -kl, --kl                 KL mode: loss, reward, none
@@ -17,12 +17,6 @@ Options:
   -name, --name             Optional run name suffix; default is timestamp + pid
   -gpus, --gpus             Override CUDA_VISIBLE_DEVICES for this run
   -h, --help                Show this help message
-
-Examples:
-  bash run_grpo.sh -reward ori -model qwen3-4b
-  bash run_grpo.sh -reward new -model qwen3-8b -kl none -gpus 2,3 -name ablation_a
-  bash run_grpo.sh -reward pd -model deepseek7b -kl reward -kl-coef 0.001
-  bash run_grpo.sh -reward pd -model custom -model-id Qwen/Qwen3-30B-A3B-Instruct-2507
 EOF
 }
 
@@ -36,7 +30,7 @@ sanitize_token() {
     | sed -E 's#[^a-z0-9._-]+#-#g; s#-+#-#g; s#(^-|-$)##g'
 }
 
-REWARD_KIND=${REWARD_KIND:-"pd"}
+DATASET=${DATASET:-"gsm8k"}
 MODEL_PRESET=${MODEL_PRESET:-${MODEL_MODE:-"qwen3-4b"}}
 KL_MODE=${KL_MODE:-"loss"}
 RUN_NAME=${RUN_NAME:-""}
@@ -47,9 +41,9 @@ CLI_KL_TYPE=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    -reward|--reward)
+    -dataset|--dataset)
       [[ $# -ge 2 ]] || { echo "Missing value for $1" >&2; usage; exit 1; }
-      REWARD_KIND="$2"
+      DATASET="$2"
       shift 2
       ;;
     -model|--model|-mode|--mode)
@@ -112,49 +106,23 @@ source "${CONDA_SH}"
 conda activate verl
 set -u
 
-REWARD_KIND=$(lower "${REWARD_KIND}")
+DATASET=$(lower "${DATASET}")
 MODEL_PRESET=$(lower "${MODEL_PRESET}")
 KL_MODE=$(lower "${KL_MODE}")
 
-case "${REWARD_KIND}" in
-  ori|original)
-    RUN_VARIANT="ori"
-    REWARD_LABEL="ori"
-    REWARD_DEFAULT_GPU=0
-    DEEPCODER_REWARD_MODE=${DEEPCODER_REWARD_MODE:-"action_thought"}
-    DEEPCODER_USE_PRIMAL_DUAL=${DEEPCODER_USE_PRIMAL_DUAL:-false}
-    DEEPCODER_ENABLE_THOUGHT=${DEEPCODER_ENABLE_THOUGHT:-false}
-    DEEPCODER_BETA=${DEEPCODER_BETA:-0.0}
-    DEEPCODER_GAMMA=${DEEPCODER_GAMMA:-0.0}
+case "${DATASET}" in
+  gsm8k)
+    DATASET_LABEL="gsm8k"
     ;;
-  new|new_reward)
-    RUN_VARIANT="new_reward"
-    REWARD_LABEL="new"
-    REWARD_DEFAULT_GPU=1
-    DEEPCODER_REWARD_MODE=${DEEPCODER_REWARD_MODE:-"action_thought"}
-    DEEPCODER_USE_PRIMAL_DUAL=${DEEPCODER_USE_PRIMAL_DUAL:-false}
-    DEEPCODER_ENABLE_THOUGHT=${DEEPCODER_ENABLE_THOUGHT:-true}
-    DEEPCODER_BETA=${DEEPCODER_BETA:-1.0}
-    DEEPCODER_GAMMA=${DEEPCODER_GAMMA:-1.0}
-    ;;
-  pd|primal_dual|pd_reward)
-    RUN_VARIANT="pd_reward"
-    REWARD_LABEL="pd"
-    REWARD_DEFAULT_GPU=2
-    DEEPCODER_REWARD_MODE=${DEEPCODER_REWARD_MODE:-"primal_dual"}
-    DEEPCODER_USE_PRIMAL_DUAL=${DEEPCODER_USE_PRIMAL_DUAL:-true}
-    DEEPCODER_ENABLE_THOUGHT=${DEEPCODER_ENABLE_THOUGHT:-true}
-    DEEPCODER_BETA=${DEEPCODER_BETA:-1.0}
-    DEEPCODER_GAMMA=${DEEPCODER_GAMMA:-1.0}
+  deepscalar)
+    DATASET_LABEL="deepscalar"
     ;;
   *)
-    echo "Unsupported reward preset: ${REWARD_KIND}" >&2
+    echo "Unsupported dataset: ${DATASET}" >&2
     usage
     exit 1
     ;;
 esac
-
-DEEPCODER_PERF_GATE=${DEEPCODER_PERF_GATE:-0.0}
 
 case "${KL_MODE}" in
   none|off|false|no)
@@ -262,18 +230,16 @@ fi
 ############################################
 # 0) GPU pinning (set BEFORE Ray)
 ############################################
-DEFAULT_CUDA_VISIBLE_DEVICES=${DEFAULT_CUDA_VISIBLE_DEVICES:-${REWARD_DEFAULT_GPU}}
+DEFAULT_CUDA_VISIBLE_DEVICES=${DEFAULT_CUDA_VISIBLE_DEVICES:-"0"}
 CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-${DEFAULT_CUDA_VISIBLE_DEVICES}}
 export CUDA_VISIBLE_DEVICES
-export RUN_VARIANT
 
 TRACE=${TRACE:-1}
 if [[ "${TRACE}" == "1" ]]; then
   set -x
 fi
 
-echo "[INFO] RUN_VARIANT=${RUN_VARIANT}"
-echo "[INFO] REWARD_KIND=${REWARD_KIND}"
+echo "[INFO] DATASET=${DATASET}"
 echo "[INFO] MODEL_PRESET=${MODEL_PRESET}"
 echo "[INFO] MODEL_ID=${MODEL_ID}"
 echo "[INFO] KL_MODE=${KL_MODE}"
@@ -301,26 +267,14 @@ export PYTHONUNBUFFERED=1
 
 RAY_ADDRESS=${RAY_ADDRESS:-""}
 
-SANDBOX_FUSION_ROOT=${SANDBOX_FUSION_ROOT:-"/shared/nas2/yujiz/rl/SandboxFusion"}
-SANDBOX_SERVICE_ENV=${SANDBOX_SERVICE_ENV:-"sandbox-service"}
-SANDBOX_RUNTIME_ENV=${SANDBOX_RUNTIME_ENV:-"sandbox-runtime"}
-SANDBOX_HOST=${SANDBOX_HOST:-"127.0.0.1"}
-SANDBOX_PORT=${SANDBOX_PORT:-""}
-SANDBOX_AUTO_START=${SANDBOX_AUTO_START:-1}
-SANDBOX_CONFIG_NAME=${SANDBOX_CONFIG_NAME:-"local"}
-SANDBOX_FUSION_URL=${SANDBOX_FUSION_URL:-""}
-SANDBOX_HEALTHCHECK_TIMEOUT_S=${SANDBOX_HEALTHCHECK_TIMEOUT_S:-12}
-SANDBOX_START_TIMEOUT_S=${SANDBOX_START_TIMEOUT_S:-90}
-SKIP_SANDBOX_HEALTHCHECK=${SKIP_SANDBOX_HEALTHCHECK:-0}
-
 ############################################
 # 1) Experiment config
 ############################################
-PROJECT_NAME=${PROJECT_NAME:-"deepcoder_grpo"}
+PROJECT_NAME=${PROJECT_NAME:-"math_grpo"}
 if [[ -n "${RUN_TAG}" ]]; then
-  DEFAULT_EXP_NAME="grpo-${MODEL_TAG}-${REWARD_LABEL}-${KL_LABEL}-${RUN_TAG}-${RUN_INSTANCE_TAG}"
+  DEFAULT_EXP_NAME="grpo-${MODEL_TAG}-${DATASET_LABEL}-${KL_LABEL}-${RUN_TAG}-${RUN_INSTANCE_TAG}"
 else
-  DEFAULT_EXP_NAME="grpo-${MODEL_TAG}-${REWARD_LABEL}-${KL_LABEL}-${RUN_INSTANCE_TAG}"
+  DEFAULT_EXP_NAME="grpo-${MODEL_TAG}-${DATASET_LABEL}-${KL_LABEL}-${RUN_INSTANCE_TAG}"
 fi
 EXP_NAME=${EXP_NAME:-"${DEFAULT_EXP_NAME}"}
 
@@ -389,8 +343,16 @@ HF_HOME=${HF_HOME:-"${RAY_DATA_HOME}/hf_cache"}
 export HF_HOME
 export HF_HUB_CACHE="${HF_HOME}"
 
-TRAIN_FILE="${RAY_DATA_HOME}/math/deepcoder_full_train.parquet"
-VAL_FILE="${RAY_DATA_HOME}/math/deepcoder_full_val.parquet"
+case "${DATASET}" in
+  gsm8k)
+    TRAIN_FILE="${RAY_DATA_HOME}/gsm8k/train.parquet"
+    VAL_FILE="${RAY_DATA_HOME}/gsm8k/test.parquet"
+    ;;
+  deepscalar)
+    TRAIN_FILE="${RAY_DATA_HOME}/math/deepscalar_train.parquet"
+    VAL_FILE="${RAY_DATA_HOME}/math/deepscalar_val.parquet"
+    ;;
+esac
 
 TENSORBOARD_DIR="${CKPTS_DIR}/tensorboard"
 TRAIN_LOG_PATH="${CKPTS_DIR}/train.log"
@@ -415,169 +377,6 @@ if [[ "${GEN_TP}" -gt "${NUM_GPUS}" ]]; then
   GEN_TP="${NUM_GPUS}"
 fi
 
-find_free_port() {
-  local base=${1:-6379}
-  local limit=${2:-120}
-  BASE="${base}" LIMIT="${limit}" python3 - <<'PY'
-import os
-import socket
-import sys
-
-base = int(os.environ["BASE"])
-limit = int(os.environ["LIMIT"])
-
-for port in range(base, base + limit + 1):
-    sock = socket.socket()
-    try:
-        sock.bind(("0.0.0.0", port))
-    except OSError:
-        sock.close()
-        continue
-    sock.close()
-    print(port)
-    sys.exit(0)
-
-print(base)
-PY
-}
-
-check_sandbox_fusion() {
-  if [[ "${SKIP_SANDBOX_HEALTHCHECK}" == "1" ]]; then
-    echo "[WARN] Skipping sandbox health check because SKIP_SANDBOX_HEALTHCHECK=1"
-    return 0
-  fi
-
-  echo "[INFO] SANDBOX_FUSION_URL=${SANDBOX_FUSION_URL}"
-  SANDBOX_FUSION_URL="${SANDBOX_FUSION_URL}" \
-  SANDBOX_HEALTHCHECK_TIMEOUT_S="${SANDBOX_HEALTHCHECK_TIMEOUT_S}" \
-  python3 - <<'PY'
-import json
-import os
-import sys
-
-import requests
-
-url = os.environ["SANDBOX_FUSION_URL"]
-timeout_s = int(os.environ["SANDBOX_HEALTHCHECK_TIMEOUT_S"])
-payload = {
-    "compile_timeout": 5,
-    "run_timeout": 5,
-    "code": "print('sandbox_healthcheck_ok')",
-    "stdin": "",
-    "memory_limit_MB": 128,
-    "language": "python",
-    "files": {},
-    "fetch_files": [],
-}
-headers = {"Content-Type": "application/json", "Accept": "application/json"}
-
-try:
-    response = requests.post(url, headers=headers, data=json.dumps(payload), timeout=timeout_s)
-except Exception as exc:
-    print(f"[ERROR] Sandbox health check request failed for {url}: {exc}", file=sys.stderr)
-    sys.exit(1)
-
-print(f"[INFO] Sandbox health check HTTP {response.status_code} for {url}")
-if response.status_code != 200:
-    body = response.text.strip().replace("\n", " ")
-    if len(body) > 400:
-        body = body[:400] + "..."
-    print(f"[ERROR] Sandbox health check failed: HTTP {response.status_code}, body={body}", file=sys.stderr)
-    sys.exit(1)
-
-try:
-    result = response.json()
-except Exception as exc:
-    body = response.text.strip().replace("\n", " ")
-    if len(body) > 400:
-        body = body[:400] + "..."
-    print(f"[ERROR] Sandbox health check returned non-JSON response: {exc}; body={body}", file=sys.stderr)
-    sys.exit(1)
-
-status = result.get("status")
-run_result = result.get("run_result") or {}
-stdout = (run_result.get("stdout") or "").strip()
-stderr = (run_result.get("stderr") or "").strip()
-
-if status != "Success":
-    print(
-        f"[ERROR] Sandbox health check failed: status={status}, stdout={stdout!r}, stderr={stderr!r}",
-        file=sys.stderr,
-    )
-    sys.exit(1)
-
-if stdout != "sandbox_healthcheck_ok":
-    print(
-        f"[ERROR] Sandbox health check returned unexpected stdout={stdout!r}, stderr={stderr!r}",
-        file=sys.stderr,
-    )
-    sys.exit(1)
-
-print("[INFO] Sandbox health check passed.")
-PY
-}
-
-ensure_sandbox_fusion() {
-  if check_sandbox_fusion; then
-    return 0
-  fi
-
-  if [[ "${SANDBOX_AUTO_START}" != "1" ]]; then
-    echo "[ERROR] Sandbox health check failed and SANDBOX_AUTO_START=${SANDBOX_AUTO_START}" >&2
-    return 1
-  fi
-
-  echo "[INFO] Attempting to start local Sandbox Fusion..." >&2
-
-  local sandbox_state_dir="${CKPTS_DIR}/sandbox_fusion"
-  mkdir -p "${sandbox_state_dir}"
-
-  export SANDBOX_PID_FILE="${sandbox_state_dir}/sandbox_fusion.pid"
-
-  SANDBOX_FUSION_URL="$(
-    SANDBOX_FUSION_ROOT="${SANDBOX_FUSION_ROOT}" \
-    SANDBOX_SERVICE_ENV="${SANDBOX_SERVICE_ENV}" \
-    SANDBOX_RUNTIME_ENV="${SANDBOX_RUNTIME_ENV}" \
-    SANDBOX_CONFIG_NAME="${SANDBOX_CONFIG_NAME}" \
-    SANDBOX_HOST="${SANDBOX_HOST}" \
-    SANDBOX_PORT="${SANDBOX_PORT}" \
-    SANDBOX_START_TIMEOUT_S="${SANDBOX_START_TIMEOUT_S}" \
-    SANDBOX_STATE_DIR="${sandbox_state_dir}" \
-    SANDBOX_LOG_PATH="${sandbox_state_dir}/sandbox_fusion.log" \
-    SANDBOX_PID_FILE="${SANDBOX_PID_FILE}" \
-    SANDBOX_URL_FILE="${sandbox_state_dir}/sandbox_fusion.url" \
-    "${SCRIPT_DIR}/start_sandbox_fusion.sh"
-  )"
-  export SANDBOX_FUSION_URL
-
-  check_sandbox_fusion
-}
-
-if [[ -z "${SANDBOX_PORT}" || "${SANDBOX_PORT}" == "auto" ]]; then
-  SANDBOX_PORT=$(find_free_port 28080 400)
-fi
-if [[ -z "${SANDBOX_FUSION_URL}" ]]; then
-  SANDBOX_FUSION_URL="http://${SANDBOX_HOST}:${SANDBOX_PORT}/run_code"
-fi
-
-export SANDBOX_PORT
-export SANDBOX_FUSION_URL
-
-ensure_sandbox_fusion
-
-cleanup_sandbox() {
-  if [[ -n "${SANDBOX_PID_FILE:-}" ]] && [[ -f "${SANDBOX_PID_FILE}" ]]; then
-    local pid=$(cat "${SANDBOX_PID_FILE}")
-    if [[ -n "${pid}" ]] && ps -p "${pid}" >/dev/null 2>&1; then
-      echo "[INFO] Cleaning up local sandbox_fusion process tree (root=${pid})..." >&2
-      # Kill child workers first (uvicorn --workers forks children), then parent
-      pkill -9 -P "${pid}" 2>/dev/null || true
-      kill -9 "${pid}" 2>/dev/null || true
-    fi
-  fi
-}
-trap cleanup_sandbox EXIT
-
 echo "[INFO] CKPTS_DIR=${CKPTS_DIR}"
 echo "[INFO] TRAIN_LOG_PATH=${TRAIN_LOG_PATH}"
 echo "[INFO] TENSORBOARD_DIR=${TENSORBOARD_DIR}"
@@ -588,8 +387,6 @@ if [[ -n "${RAY_ADDRESS}" ]]; then
 else
   echo "[INFO] RAY_ADDRESS is unset; verl will start a local Ray runtime via ray.init()."
 fi
-echo "[INFO] SANDBOX_PORT=${SANDBOX_PORT}"
-echo "[INFO] SANDBOX_FUSION_URL=${SANDBOX_FUSION_URL}"
 echo "[INFO] EVAL_EVERY_STEPS=${EVAL_EVERY_STEPS}"
 echo "[INFO] SAVE_EVERY_STEPS=${SAVE_EVERY_STEPS}"
 
@@ -648,13 +445,6 @@ CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES} python3 -m verl.trainer.main_ppo \
   actor_rollout_ref.actor.kl_loss_coef="${KL_LOSS_COEF}" \
   actor_rollout_ref.actor.kl_loss_type="${KL_LOSS_TYPE}" \
   reward_model.reward_manager=naive \
-  +reward_model.sandbox_fusion.url="${SANDBOX_FUSION_URL}" \
-  ++reward_model.reward_kwargs.deepcoder_reward_mode="${DEEPCODER_REWARD_MODE}" \
-  ++reward_model.reward_kwargs.deepcoder_use_primal_dual="${DEEPCODER_USE_PRIMAL_DUAL}" \
-  ++reward_model.reward_kwargs.enable_thought="${DEEPCODER_ENABLE_THOUGHT}" \
-  ++reward_model.reward_kwargs.beta="${DEEPCODER_BETA}" \
-  ++reward_model.reward_kwargs.gamma="${DEEPCODER_GAMMA}" \
-  ++reward_model.reward_kwargs.perf_gate="${DEEPCODER_PERF_GATE}" \
   algorithm.use_kl_in_reward="${USE_KL_IN_REWARD}" \
   algorithm.kl_penalty="${KL_PENALTY}" \
   algorithm.kl_ctrl.type="${KL_CTRL_TYPE}" \

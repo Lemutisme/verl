@@ -139,6 +139,7 @@ echo "[INFO] Logs: ${SANDBOX_LOG_PATH}" >&2
 
 nohup bash -lc "
   cd '${SANDBOX_FUSION_ROOT}' &&
+  export TMPDIR='${SANDBOX_STATE_DIR}' &&
   export SANDBOX_CONFIG='${SANDBOX_CONFIG_NAME}' &&
   export PYTHONUNBUFFERED=1 &&
   exec '${SANDBOX_SERVICE_PYTHON}' -m uvicorn sandbox.server.server:app --host '${SANDBOX_HOST}' --port '${SANDBOX_PORT}' --workers 4

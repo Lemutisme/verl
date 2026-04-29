@@ -173,7 +173,7 @@ def call_sandbox_api(
             break  # Exit retry loop on other unexpected errors
 
     # If loop finishes without returning success, return the last recorded error
-    logger.error(f"{log_prefix}Sandbox API call failed. Last error: {last_error}")  # <-- Use internal log_prefix
+    logger.debug(f"{log_prefix}Sandbox API call failed. Last error: {last_error}")  # <-- Use internal log_prefix
     # Return the error message without the prefix, as the caller doesn't need the internal ID
     # Ensure API call failure returns error message, leading to -1 in check_correctness
     return None, last_error.replace(log_prefix, "API Call Failed: ") if last_error else "API Call Failed after retries"
@@ -351,11 +351,11 @@ if __name__ == '__main__':
     if error_msg:
         metadata["status"] = "api_error"
         result_status = -1  # API request itself failed (includes timeout after retries)
-        logger.error(f"Case {case_index}: API error occurred: {error_msg}")
-        # Log code and input only on error for brevity
+        logger.debug(f"Case {case_index}: API error occurred: {error_msg}")
+        # Log code and input only at debug level to avoid flooding training logs
         generation_to_log = generation[:200] + "..." if len(generation) > 200 else generation
-        logger.error(f"Case {case_index}: code: {generation_to_log}")
-        logger.error(f"Case {case_index}: input: {stdin}")
+        logger.debug(f"Case {case_index}: code: {generation_to_log}")
+        logger.debug(f"Case {case_index}: input: {stdin}")
     elif api_response:
         # --- Add debug logging ---
         logger.debug(f"Case {case_index}: API Response: {api_response}")
