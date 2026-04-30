@@ -4,9 +4,10 @@ set -euo pipefail
 usage() {
   cat <<'EOF'
 Usage:
-  bash run_grpo_math.sh -dataset {gsm8k|deepscalar|general365|openr1} -model {qwen3-4b|qwen3-8b|deepseek7b|custom} [options]
+  bash run_grpo_math.sh -reward {ori|new|pd} -dataset {gsm8k|deepscalar|general365|openr1} -model {qwen3-4b|qwen3-8b|deepseek7b|custom} [options]
 
 Options:
+  -reward, --reward         Reward preset: ori, new, pd (default: pd)
   -dataset, --dataset       Dataset preset: gsm8k, deepscalar, general365, openr1 (default: gsm8k)
   -model, --model           Model preset: qwen3-4b, qwen3-8b, deepseek-r1-1.5b, deepseek7b, custom
   -mode, --mode             Alias of -model
@@ -16,6 +17,12 @@ Options:
   -model-id, --model-id     Override the Hugging Face model id directly
   -name, --name             Optional run name suffix; default is timestamp + pid
   -gpus, --gpus             Override CUDA_VISIBLE_DEVICES for this run
+
+Math sub-reward env knobs:
+  MATH_ENABLE_SUB_REWARDS=true/false
+  MATH_ENABLE_<NAME>=true/false and MATH_WEIGHT_<NAME>=float
+  Names: FINAL_ANSWER_REWARD, BOXED_FORMAT_REWARD, STEP_REACHABILITY_REWARD,
+         PROGRESS_REWARD, PROCESS_REWARD_MODEL_SCORE, REASONING_DISTANCE_REWARD
   -h, --help                Show this help message
 EOF
 }
@@ -31,7 +38,7 @@ sanitize_token() {
 }
 
 DATASET=${DATASET:-"gsm8k"}
-REWARD_KIND=${REWARD_KIND:-"none"}
+REWARD_KIND=${REWARD_KIND:-"pd"}
 MODEL_PRESET=${MODEL_PRESET:-${MODEL_MODE:-"qwen3-4b"}}
 KL_MODE=${KL_MODE:-"loss"}
 RUN_NAME=${RUN_NAME:-""}
@@ -138,16 +145,41 @@ esac
 
 REWARD_KIND=$(lower "${REWARD_KIND}")
 case "${REWARD_KIND}" in
+  ori|original|none)
+    REWARD_LABEL="ori"
+    COMBINE_MODE="none"
+    MATH_ENABLE_SUB_REWARDS=${MATH_ENABLE_SUB_REWARDS:-false}
+    ;;
   new|new_reward)
+    REWARD_LABEL="new"
     COMBINE_MODE="multiplier"
+    MATH_ENABLE_SUB_REWARDS=${MATH_ENABLE_SUB_REWARDS:-true}
     ;;
   pd|primal_dual|pd_reward)
+    REWARD_LABEL="pd"
     COMBINE_MODE="pd"
+    MATH_ENABLE_SUB_REWARDS=${MATH_ENABLE_SUB_REWARDS:-true}
     ;;
   *)
-    COMBINE_MODE="none"
+    echo "Unsupported reward preset: ${REWARD_KIND}" >&2
+    usage
+    exit 1
     ;;
 esac
+
+MATH_SIGNED_REWARD=${MATH_SIGNED_REWARD:-true}
+MATH_ENABLE_FINAL_ANSWER_REWARD=${MATH_ENABLE_FINAL_ANSWER_REWARD:-false}
+MATH_WEIGHT_FINAL_ANSWER_REWARD=${MATH_WEIGHT_FINAL_ANSWER_REWARD:-0.0}
+MATH_ENABLE_BOXED_FORMAT_REWARD=${MATH_ENABLE_BOXED_FORMAT_REWARD:-true}
+MATH_WEIGHT_BOXED_FORMAT_REWARD=${MATH_WEIGHT_BOXED_FORMAT_REWARD:-0.10}
+MATH_ENABLE_STEP_REACHABILITY_REWARD=${MATH_ENABLE_STEP_REACHABILITY_REWARD:-true}
+MATH_WEIGHT_STEP_REACHABILITY_REWARD=${MATH_WEIGHT_STEP_REACHABILITY_REWARD:-0.10}
+MATH_ENABLE_PROGRESS_REWARD=${MATH_ENABLE_PROGRESS_REWARD:-true}
+MATH_WEIGHT_PROGRESS_REWARD=${MATH_WEIGHT_PROGRESS_REWARD:-0.10}
+MATH_ENABLE_PROCESS_REWARD_MODEL_SCORE=${MATH_ENABLE_PROCESS_REWARD_MODEL_SCORE:-true}
+MATH_WEIGHT_PROCESS_REWARD_MODEL_SCORE=${MATH_WEIGHT_PROCESS_REWARD_MODEL_SCORE:-0.10}
+MATH_ENABLE_REASONING_DISTANCE_REWARD=${MATH_ENABLE_REASONING_DISTANCE_REWARD:-true}
+MATH_WEIGHT_REASONING_DISTANCE_REWARD=${MATH_WEIGHT_REASONING_DISTANCE_REWARD:-0.08}
 
 case "${KL_MODE}" in
   none|off|false|no)
@@ -269,6 +301,8 @@ if [[ "${TRACE}" == "1" ]]; then
 fi
 
 echo "[INFO] DATASET=${DATASET}"
+echo "[INFO] REWARD_KIND=${REWARD_KIND}"
+echo "[INFO] MATH_ENABLE_SUB_REWARDS=${MATH_ENABLE_SUB_REWARDS}"
 echo "[INFO] MODEL_PRESET=${MODEL_PRESET}"
 echo "[INFO] MODEL_ID=${MODEL_ID}"
 echo "[INFO] KL_MODE=${KL_MODE}"
@@ -301,9 +335,9 @@ RAY_ADDRESS=${RAY_ADDRESS:-""}
 ############################################
 PROJECT_NAME=${PROJECT_NAME:-"math_grpo"}
 if [[ -n "${RUN_TAG}" ]]; then
-  DEFAULT_EXP_NAME="grpo-${MODEL_TAG}-${DATASET_LABEL}-${KL_LABEL}-${RUN_TAG}-${RUN_INSTANCE_TAG}"
+  DEFAULT_EXP_NAME="grpo-${MODEL_TAG}-${DATASET_LABEL}-${REWARD_LABEL}-${KL_LABEL}-${RUN_TAG}-${RUN_INSTANCE_TAG}"
 else
-  DEFAULT_EXP_NAME="grpo-${MODEL_TAG}-${DATASET_LABEL}-${KL_LABEL}-${RUN_INSTANCE_TAG}"
+  DEFAULT_EXP_NAME="grpo-${MODEL_TAG}-${DATASET_LABEL}-${REWARD_LABEL}-${KL_LABEL}-${RUN_INSTANCE_TAG}"
 fi
 EXP_NAME=${EXP_NAME:-"${DEFAULT_EXP_NAME}"}
 
@@ -485,6 +519,20 @@ CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES} python3 -m verl.trainer.main_ppo \
   ++custom_reward_function.path="${SCRIPT_DIR}/custom_reward.py" \
   ++custom_reward_function.name="compute_score" \
   ++reward_model.reward_kwargs.combine_mode="${COMBINE_MODE}" \
+  ++reward_model.reward_kwargs.math_enable_sub_rewards="${MATH_ENABLE_SUB_REWARDS}" \
+  ++reward_model.reward_kwargs.math_signed_reward="${MATH_SIGNED_REWARD}" \
+  ++reward_model.reward_kwargs.math_enable_final_answer_reward="${MATH_ENABLE_FINAL_ANSWER_REWARD}" \
+  ++reward_model.reward_kwargs.math_weight_final_answer_reward="${MATH_WEIGHT_FINAL_ANSWER_REWARD}" \
+  ++reward_model.reward_kwargs.math_enable_boxed_format_reward="${MATH_ENABLE_BOXED_FORMAT_REWARD}" \
+  ++reward_model.reward_kwargs.math_weight_boxed_format_reward="${MATH_WEIGHT_BOXED_FORMAT_REWARD}" \
+  ++reward_model.reward_kwargs.math_enable_step_reachability_reward="${MATH_ENABLE_STEP_REACHABILITY_REWARD}" \
+  ++reward_model.reward_kwargs.math_weight_step_reachability_reward="${MATH_WEIGHT_STEP_REACHABILITY_REWARD}" \
+  ++reward_model.reward_kwargs.math_enable_progress_reward="${MATH_ENABLE_PROGRESS_REWARD}" \
+  ++reward_model.reward_kwargs.math_weight_progress_reward="${MATH_WEIGHT_PROGRESS_REWARD}" \
+  ++reward_model.reward_kwargs.math_enable_process_reward_model_score="${MATH_ENABLE_PROCESS_REWARD_MODEL_SCORE}" \
+  ++reward_model.reward_kwargs.math_weight_process_reward_model_score="${MATH_WEIGHT_PROCESS_REWARD_MODEL_SCORE}" \
+  ++reward_model.reward_kwargs.math_enable_reasoning_distance_reward="${MATH_ENABLE_REASONING_DISTANCE_REWARD}" \
+  ++reward_model.reward_kwargs.math_weight_reasoning_distance_reward="${MATH_WEIGHT_REASONING_DISTANCE_REWARD}" \
   algorithm.use_kl_in_reward="${USE_KL_IN_REWARD}" \
   algorithm.kl_penalty="${KL_PENALTY}" \
   algorithm.kl_ctrl.type="${KL_CTRL_TYPE}" \

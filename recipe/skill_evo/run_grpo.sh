@@ -16,6 +16,12 @@ Options:
   -model-id, --model-id     Override the Hugging Face model id directly
   -name, --name             Optional run name suffix; default is timestamp + pid
   -gpus, --gpus             Override CUDA_VISIBLE_DEVICES for this run
+
+Coding sub-reward env knobs:
+  CODING_ENABLE_SUB_REWARDS=true/false
+  CODING_ENABLE_<NAME>=true/false and CODING_WEIGHT_<NAME>=float
+  Names: UNIT_TEST_PASS_RATE, COMPILER_RUNTIME_FEEDBACK, STATIC_ANALYSIS_REWARD,
+         EXECUTED_TOKEN_CREDIT, BLOCK_LEVEL_PROCESS_REWARD
   -h, --help                Show this help message
 
 Examples:
@@ -125,6 +131,7 @@ case "${REWARD_KIND}" in
     DEEPCODER_ENABLE_THOUGHT=${DEEPCODER_ENABLE_THOUGHT:-false}
     DEEPCODER_BETA=${DEEPCODER_BETA:-0.0}
     DEEPCODER_GAMMA=${DEEPCODER_GAMMA:-0.0}
+    CODING_ENABLE_SUB_REWARDS=${CODING_ENABLE_SUB_REWARDS:-false}
     ;;
   new|new_reward)
     RUN_VARIANT="new_reward"
@@ -134,6 +141,7 @@ case "${REWARD_KIND}" in
     DEEPCODER_ENABLE_THOUGHT=${DEEPCODER_ENABLE_THOUGHT:-true}
     DEEPCODER_BETA=${DEEPCODER_BETA:-1.0}
     DEEPCODER_GAMMA=${DEEPCODER_GAMMA:-1.0}
+    CODING_ENABLE_SUB_REWARDS=${CODING_ENABLE_SUB_REWARDS:-true}
     ;;
   pd|primal_dual|pd_reward)
     RUN_VARIANT="pd_reward"
@@ -143,6 +151,7 @@ case "${REWARD_KIND}" in
     DEEPCODER_ENABLE_THOUGHT=${DEEPCODER_ENABLE_THOUGHT:-true}
     DEEPCODER_BETA=${DEEPCODER_BETA:-1.0}
     DEEPCODER_GAMMA=${DEEPCODER_GAMMA:-1.0}
+    CODING_ENABLE_SUB_REWARDS=${CODING_ENABLE_SUB_REWARDS:-true}
     ;;
   *)
     echo "Unsupported reward preset: ${REWARD_KIND}" >&2
@@ -152,6 +161,16 @@ case "${REWARD_KIND}" in
 esac
 
 DEEPCODER_PERF_GATE=${DEEPCODER_PERF_GATE:-0.0}
+CODING_ENABLE_UNIT_TEST_PASS_RATE=${CODING_ENABLE_UNIT_TEST_PASS_RATE:-false}
+CODING_WEIGHT_UNIT_TEST_PASS_RATE=${CODING_WEIGHT_UNIT_TEST_PASS_RATE:-0.0}
+CODING_ENABLE_COMPILER_RUNTIME_FEEDBACK=${CODING_ENABLE_COMPILER_RUNTIME_FEEDBACK:-true}
+CODING_WEIGHT_COMPILER_RUNTIME_FEEDBACK=${CODING_WEIGHT_COMPILER_RUNTIME_FEEDBACK:-0.20}
+CODING_ENABLE_STATIC_ANALYSIS_REWARD=${CODING_ENABLE_STATIC_ANALYSIS_REWARD:-true}
+CODING_WEIGHT_STATIC_ANALYSIS_REWARD=${CODING_WEIGHT_STATIC_ANALYSIS_REWARD:-0.15}
+CODING_ENABLE_EXECUTED_TOKEN_CREDIT=${CODING_ENABLE_EXECUTED_TOKEN_CREDIT:-true}
+CODING_WEIGHT_EXECUTED_TOKEN_CREDIT=${CODING_WEIGHT_EXECUTED_TOKEN_CREDIT:-0.10}
+CODING_ENABLE_BLOCK_LEVEL_PROCESS_REWARD=${CODING_ENABLE_BLOCK_LEVEL_PROCESS_REWARD:-true}
+CODING_WEIGHT_BLOCK_LEVEL_PROCESS_REWARD=${CODING_WEIGHT_BLOCK_LEVEL_PROCESS_REWARD:-0.10}
 
 case "${KL_MODE}" in
   none|off|false|no)
@@ -275,6 +294,7 @@ fi
 
 echo "[INFO] RUN_VARIANT=${RUN_VARIANT}"
 echo "[INFO] REWARD_KIND=${REWARD_KIND}"
+echo "[INFO] CODING_ENABLE_SUB_REWARDS=${CODING_ENABLE_SUB_REWARDS}"
 echo "[INFO] MODEL_PRESET=${MODEL_PRESET}"
 echo "[INFO] MODEL_ID=${MODEL_ID}"
 echo "[INFO] KL_MODE=${KL_MODE}"
@@ -657,6 +677,17 @@ CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES} python3 -m verl.trainer.main_ppo \
   ++reward_model.reward_kwargs.weight_thought="${DEEPCODER_BETA}" \
   ++reward_model.reward_kwargs.weight_action="${DEEPCODER_GAMMA}" \
   ++reward_model.reward_kwargs.perf_gate="${DEEPCODER_PERF_GATE}" \
+  ++reward_model.reward_kwargs.coding_enable_sub_rewards="${CODING_ENABLE_SUB_REWARDS}" \
+  ++reward_model.reward_kwargs.coding_enable_unit_test_pass_rate="${CODING_ENABLE_UNIT_TEST_PASS_RATE}" \
+  ++reward_model.reward_kwargs.coding_weight_unit_test_pass_rate="${CODING_WEIGHT_UNIT_TEST_PASS_RATE}" \
+  ++reward_model.reward_kwargs.coding_enable_compiler_runtime_feedback="${CODING_ENABLE_COMPILER_RUNTIME_FEEDBACK}" \
+  ++reward_model.reward_kwargs.coding_weight_compiler_runtime_feedback="${CODING_WEIGHT_COMPILER_RUNTIME_FEEDBACK}" \
+  ++reward_model.reward_kwargs.coding_enable_static_analysis_reward="${CODING_ENABLE_STATIC_ANALYSIS_REWARD}" \
+  ++reward_model.reward_kwargs.coding_weight_static_analysis_reward="${CODING_WEIGHT_STATIC_ANALYSIS_REWARD}" \
+  ++reward_model.reward_kwargs.coding_enable_executed_token_credit="${CODING_ENABLE_EXECUTED_TOKEN_CREDIT}" \
+  ++reward_model.reward_kwargs.coding_weight_executed_token_credit="${CODING_WEIGHT_EXECUTED_TOKEN_CREDIT}" \
+  ++reward_model.reward_kwargs.coding_enable_block_level_process_reward="${CODING_ENABLE_BLOCK_LEVEL_PROCESS_REWARD}" \
+  ++reward_model.reward_kwargs.coding_weight_block_level_process_reward="${CODING_WEIGHT_BLOCK_LEVEL_PROCESS_REWARD}" \
   algorithm.use_kl_in_reward="${USE_KL_IN_REWARD}" \
   algorithm.kl_penalty="${KL_PENALTY}" \
   algorithm.kl_ctrl.type="${KL_CTRL_TYPE}" \

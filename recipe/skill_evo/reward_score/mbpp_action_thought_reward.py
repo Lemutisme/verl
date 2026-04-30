@@ -9,6 +9,8 @@ import ast
 import math
 from collections import defaultdict
 
+from reward_score.sub_reward import collect_subrewards
+
 
 _CODEBLOCK_RE = re.compile(r"```(?:python)?\s*(.*?)```", re.DOTALL | re.IGNORECASE)
 
@@ -390,7 +392,7 @@ def compute_score_mbpp(
         code = _extract_code(str(resp))
 
         # correctness: ORIGINAL runner (unchanged)
-        passed, total, _ = _run_mbpp_tests_in_subproc(code, tests, timeout_s=timeout_s)
+        passed, total, eval_error = _run_mbpp_tests_in_subproc(code, tests, timeout_s=timeout_s)
         S_perf = 0.0 if total == 0 else float(passed) / float(total)
         S_thought = 0.0
         S_action = 0.0
@@ -413,8 +415,21 @@ def compute_score_mbpp(
                         kappa=kappa,
                     )
 
+        subrewards = {"thought": S_thought, "action": S_action}
+        sub_ctx = {
+            "response": resp,
+            "code": code,
+            "sample": sample,
+            "ground_truth": ground_truth,
+            "s_perf": S_perf,
+            "eval_passed": passed,
+            "eval_total": total,
+            "eval_error": eval_error,
+        }
+        subrewards.update(collect_subrewards("coding", sub_ctx, **kwargs))
+
         if kwargs.get("return_components", False):
-            return {"main_reward": S_perf, "subrewards": {"thought": S_thought, "action": S_action}}
+            return {"main_reward": S_perf, "subrewards": subrewards}
 
         final_reward = 0.0
         if S_perf > perf_gate:
@@ -427,6 +442,7 @@ def compute_score_mbpp(
             "original_reward": float(S_perf),
             "thought_reward": float(S_thought),
             "action_reward": float(S_action),
+            **{f"{name}_reward": float(value) for name, value in subrewards.items()},
         }
 
     # Try common fields for generated text
