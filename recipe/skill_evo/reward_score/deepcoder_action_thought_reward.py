@@ -10,6 +10,7 @@ from collections import defaultdict
 # Reuse the sandbox execution wrapper from sandbox_fusion
 # (Assuming sandbox_fusion/utils.py is available in verl.utils.reward_score)
 from verl.utils.reward_score.sandbox_fusion.utils import check_correctness, DEFAULT_TIMEOUT
+from reward_score.sub_reward import collect_subrewards
 
 _CODEBLOCK_RE = re.compile(r"```(?:python)?\s*(.*?)```", re.DOTALL | re.IGNORECASE)
 
@@ -35,6 +36,14 @@ def _get_tests_deepcoder(sample: Dict[str, Any]) -> Tuple[List[Any], List[Any]]:
         return [], []
     try:
         data = json.loads(tests_str)
+        if isinstance(data, list):
+            inputs = []
+            outputs = []
+            for item in data:
+                if isinstance(item, dict):
+                    inputs.append(item.get("input", item.get("stdin", "")))
+                    outputs.append(item.get("output", item.get("stdout", "")))
+            return inputs, outputs
         inputs = data.get("inputs", [])
         outputs = data.get("outputs", [])
         return inputs, outputs
@@ -180,7 +189,7 @@ def compute_score_deepcoder(sample_or_solution: dict, ground_truth: Any = None, 
 
     def _score_one(resp: str) -> Dict[str, float]:
         code = _extract_code(str(resp))
-        passed, total, _ = _run_deepcoder_eval(code, inputs, expected_outputs, timeout_s, sandbox_url, concurrent_semaphore=concurrent_semaphore)
+        passed, total, eval_error = _run_deepcoder_eval(code, inputs, expected_outputs, timeout_s, sandbox_url, concurrent_semaphore=concurrent_semaphore)
         S_perf = 0.0 if total == 0 else float(passed) / float(total)
         S_thought = 0.0
         S_action = 0.0
@@ -188,8 +197,21 @@ def compute_score_deepcoder(sample_or_solution: dict, ground_truth: Any = None, 
         if S_perf > perf_gate:
             S_thought = compute_thought_score(code, M_top=M_top, w1=w1, w2=w2) if enable_thought else 0.0
 
+        subrewards = {"thought": S_thought, "action": S_action}
+        sub_ctx = {
+            "response": resp,
+            "code": code,
+            "sample": sample,
+            "ground_truth": ground_truth,
+            "s_perf": S_perf,
+            "eval_passed": passed,
+            "eval_total": total,
+            "eval_error": eval_error,
+        }
+        subrewards.update(collect_subrewards("coding", sub_ctx, **kwargs))
+
         if kwargs.get("return_components", False):
-            return {"main_reward": S_perf, "subrewards": {"thought": S_thought, "action": S_action}}
+            return {"main_reward": S_perf, "subrewards": subrewards}
 
         final_reward = 0.0
         if S_perf > perf_gate:
@@ -202,6 +224,7 @@ def compute_score_deepcoder(sample_or_solution: dict, ground_truth: Any = None, 
             "original_reward": float(S_perf),
             "thought_reward": float(S_thought),
             "action_reward": float(S_action),
+            **{f"{name}_reward": float(value) for name, value in subrewards.items()},
         }
 
     if isinstance(sample.get("responses", None), list):

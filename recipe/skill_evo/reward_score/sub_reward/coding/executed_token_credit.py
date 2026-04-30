@@ -1,0 +1,18 @@
+from typing import Any
+
+
+def compute(ctx: dict[str, Any], **_: Any) -> float:
+    code = str(ctx.get("code") or "")
+    total_lines = [line for line in code.splitlines() if line.strip()]
+    executed = ctx.get("executed_lines")
+    if isinstance(executed, (set, list, tuple)) and total_lines:
+        return len(set(executed)) / float(len(total_lines))
+
+    total = int(ctx.get("eval_total") or 0)
+    passed = int(ctx.get("eval_passed") or 0)
+    if total <= 0:
+        return 0.0
+
+    non_comment = [line for line in total_lines if not line.lstrip().startswith("#")]
+    density = len(non_comment) / float(len(total_lines) or 1)
+    return 0.5 * (passed / float(total)) + 0.5 * density
