@@ -31,15 +31,18 @@ MATH_DATA_SOURCES = {
 }
 
 
-def _get_combiner(kwargs):
-    global _combiner
-    if _combiner is None:
-        combine_mode = kwargs.get("combine_mode", "pd")
-        combiner_kwargs = {k: v for k, v in kwargs.items() if k != "combine_mode"}
+_COMBINER_CACHE = {}
+
+def _get_combiner(kwargs: dict[str, Any]) -> GenericRewardCombiner:
+    print(f"DEBUG: _get_combiner called with kwargs={kwargs}")
+    combine_mode = str(kwargs.get("combine_mode", "none")).lower()
+    if combine_mode not in _COMBINER_CACHE:
+        combiner_kwargs = {k: v for k, v in kwargs.items() if k not in ["combine_mode"]}
         combiner_kwargs.update(weight_overrides("coding", **kwargs))
         combiner_kwargs.update(weight_overrides("math", **kwargs))
-        _combiner = GenericRewardCombiner(combine_mode=combine_mode, subreward_names=[], **combiner_kwargs)
-    return _combiner
+        _COMBINER_CACHE[combine_mode] = GenericRewardCombiner(combine_mode=combine_mode, subreward_names=[], **combiner_kwargs)
+    
+    return _COMBINER_CACHE[combine_mode]
 
 
 def _score_math(data_source, solution_str, ground_truth, extra_info=None, **kwargs):
@@ -47,6 +50,14 @@ def _score_math(data_source, solution_str, ground_truth, extra_info=None, **kwar
         from verl.utils.reward_score import gsm8k
 
         base_res = gsm8k.compute_score(solution_str, ground_truth)
+        
+        # Fallback for models that output \boxed{} instead of ####
+        if isinstance(base_res, (int, float)) and base_res == 0.0 or (isinstance(base_res, dict) and base_res.get("score", 0.0) == 0.0):
+            if "\\boxed{" in solution_str:
+                base_res = math_dapo.compute_score(solution_str, ground_truth)
+            else:
+                base_res = gsm8k.compute_score(solution_str, ground_truth, method="flexible")
+                
         if isinstance(base_res, dict):
             base_score = float(base_res.get("score", base_res.get("acc", 0.0)))
             base_acc = bool(base_res.get("acc", base_score > 0.0))
@@ -61,6 +72,7 @@ def _score_math(data_source, solution_str, ground_truth, extra_info=None, **kwar
 
     combine_mode = str(kwargs.get("combine_mode", "none")).lower()
     if combine_mode == "none" or not to_bool(kwargs.get("math_enable_sub_rewards", False), False):
+        print(f"DEBUG bypass: combine_mode={combine_mode}, math_enable_sub_rewards={kwargs.get('math_enable_sub_rewards')}")
         return base_res
 
     ctx = {

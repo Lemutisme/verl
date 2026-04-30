@@ -17,6 +17,7 @@ Options:
   -model-id, --model-id     Override the Hugging Face model id directly
   -name, --name             Optional run name suffix; default is timestamp + pid
   -gpus, --gpus             Override CUDA_VISIBLE_DEVICES for this run
+  --save_freq               Set checkpoint saving frequency (e.g. -1 to disable)
 
 Math sub-reward env knobs:
   MATH_ENABLE_SUB_REWARDS=true/false
@@ -46,6 +47,7 @@ CLI_MODEL_ID=""
 CLI_CUDA_VISIBLE_DEVICES=""
 CLI_KL_COEF=""
 CLI_KL_TYPE=""
+CLI_SAVE_FREQ=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -92,6 +94,11 @@ while [[ $# -gt 0 ]]; do
     -gpus|--gpus)
       [[ $# -ge 2 ]] || { echo "Missing value for $1" >&2; usage; exit 1; }
       CLI_CUDA_VISIBLE_DEVICES="$2"
+      shift 2
+      ;;
+    --save_freq)
+      [[ $# -ge 2 ]] || { echo "Missing value for $1" >&2; usage; exit 1; }
+      CLI_SAVE_FREQ="$2"
       shift 2
       ;;
     -h|--help)
@@ -343,8 +350,8 @@ EXP_NAME=${EXP_NAME:-"${DEFAULT_EXP_NAME}"}
 
 ADV_ESTIMATOR=${ADV_ESTIMATOR:-"grpo"}
 
+SAVE_EVERY_STEPS=${CLI_SAVE_FREQ:-${SAVE_EVERY_STEPS:-5}}
 EVAL_EVERY_STEPS=${EVAL_EVERY_STEPS:-5}
-SAVE_EVERY_STEPS=${SAVE_EVERY_STEPS:-5}
 TOTAL_EPOCHS=${TOTAL_EPOCHS:-10}
 SAVE_BEST_CHECKPOINT=${SAVE_BEST_CHECKPOINT:-true}
 BEST_CHECKPOINT_DIRNAME=${BEST_CHECKPOINT_DIRNAME:-"best_reward_checkpoint"}
@@ -550,8 +557,8 @@ CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES} python3 -m verl.trainer.main_ppo \
   trainer.test_freq="${EVAL_EVERY_STEPS}" \
   trainer.total_epochs="${TOTAL_EPOCHS}" \
   trainer.default_local_dir="${CKPTS_DIR}" \
-  trainer.max_actor_ckpt_to_keep=1 \
-  trainer.max_critic_ckpt_to_keep=1 \
+  trainer.max_actor_ckpt_to_keep=100 \
+  trainer.max_critic_ckpt_to_keep=100 \
   trainer.resume_mode="${RESUME_MODE:-disable}" \
   ++trainer.save_best_checkpoint="${SAVE_BEST_CHECKPOINT}" \
   ++trainer.best_checkpoint_dirname="${BEST_CHECKPOINT_DIRNAME}" \
