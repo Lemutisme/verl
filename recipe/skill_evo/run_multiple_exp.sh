@@ -46,66 +46,141 @@ MATH_SCRIPT="./run_grpo_math.sh"
 # run_grpo.sh for Code is also in the same directory
 CODE_SCRIPT="./run_grpo.sh"
 
-# 2.1) Helper: Occupy GPU on failure
-occupy_card_on_failure() {
+# 2.1) Helper: Log failure and continue (replaces occupy_card_on_failure)
+FAILED_TASKS=()
+
+log_failure() {
     local exit_code=$1
     local task_name=$2
     if [ $exit_code -ne 0 ]; then
         echo ""
         echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
-        echo "[CRITICAL] Task '${task_name}' FAILED with exit code ${exit_code}."
-        echo "[INFO] Starting GPU occupation (90% memory) to hold the card..."
+        echo "[FAILED] Task '${task_name}' FAILED with exit code ${exit_code}."
+        echo "[INFO] Continuing to next experiment..."
         echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
         echo ""
-        # Only occupy the first GPU if a list is provided
-        local target_gpu=$(echo $GPUS | cut -d',' -f1)
-        CUDA_VISIBLE_DEVICES=${target_gpu} python3 -c "
+        FAILED_TASKS+=("${task_name} (exit=${exit_code})")
+    else
+        echo "[OK] Task '${task_name}' completed successfully."
+    fi
+}
+
+# 2.2) GPU occupation helper (optional, use with -occupy flag)
+occupy_gpu_until_killed() {
+    echo "[INFO] Starting GPU occupation (90% memory) to hold the card..."
+    local target_gpu=$(echo $GPUS | cut -d',' -f1)
+    CUDA_VISIBLE_DEVICES=${target_gpu} python3 -c "
 import torch, time, sys
 try:
-    # Use index 0 because CUDA_VISIBLE_DEVICES is set to exactly one GPU
     device = torch.device('cuda:0')
     total_mem = torch.cuda.get_device_properties(device).total_memory
     target_mem = int(total_mem * 0.9)
     print(f'Successfully allocated {target_mem / 1024**3:.2f} GB on GPU ${target_gpu}')
     x = torch.empty(target_mem // 4, dtype=torch.float32, device=device)
-    print('GPU is now HELD. The script will wait here for your investigation.')
-    print('Kill this process (or Ctrl+C) to release the card.')
+    print('GPU is now HELD. Kill this process (or Ctrl+C) to release the card.')
     while True: time.sleep(3600)
 except Exception as e:
     print(f'Occupation failed: {e}')
     sys.exit(1)
 "
-        exit $exit_code
-    fi
 }
 
-# 3. Main Loop
-for REWARD in "${REWARDS[@]}"; do
-    echo ""
-    echo "################################################################"
-    echo "# STARTING EXPERIMENTS FOR REWARD PRESET: ${REWARD}"
-    echo "################################################################"
-    echo ""
+# 2.3) CUDA memory fragmentation prevention
+# vLLM (since recent versions) explicitly checks and throws an Assertion error 
+# because expandable_segments:True is incompatible with vLLM's memory pool mechanism.
+# Thus we must comment it out or set it to false:
+# export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"
+export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:False"
 
-    # --- Task 1: Math (DeepScalar) ---
-    echo "[RUN] Math: DeepScalar | Reward: ${REWARD}"
-    bash "${MATH_SCRIPT}" -reward "${REWARD}" -dataset deepscalar -gpus "${GPUS}"
-    occupy_card_on_failure $? "Math:DeepScalar:${REWARD}"
+# 2.4) Setup Global Logging Directory
+DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+EXP_LOG_DIR="${DIR}/logs_multi_exp/$(date +%Y%m%d_%H%M%S)"
+mkdir -p "${EXP_LOG_DIR}"
+echo "[INFO] All stdout and stderr logs will be saved to: ${EXP_LOG_DIR}"
 
-    # --- Task 2: General Reasoning (General365) ---
-    echo "[RUN] General: General365 | Reward: ${REWARD}"
-    bash "${MATH_SCRIPT}" -reward "${REWARD}" -dataset general365 -gpus "${GPUS}"
-    occupy_card_on_failure $? "General:General365:${REWARD}"
+# 3. Infinite Loop — runs until manually stopped (Ctrl+C)
+ROUND=0
 
-    # --- Task 3: Code (DeepCoder) ---
-    echo "[RUN] Code: DeepCoder | Reward: ${REWARD}"
-    bash "${CODE_SCRIPT}" -reward "${REWARD}" -gpus "${GPUS}"
-    occupy_card_on_failure $? "Code:DeepCoder:${REWARD}"
-
+while true; do
+    ROUND=$((ROUND + 1))
+    ROUND_FAILED_TASKS=()
     echo ""
-    echo "[DONE] Completed experiments for reward: ${REWARD}"
-    echo "################################################################"
+    echo "================================================================"
+    echo "  ROUND ${ROUND} — $(date '+%Y-%m-%d %H:%M:%S')"
+    echo "================================================================"
+
+    for REWARD in "${REWARDS[@]}"; do
+        echo ""
+        echo "################################################################"
+        echo "# [Round ${ROUND}] REWARD PRESET: ${REWARD}"
+        echo "################################################################"
+        echo ""
+
+        # Ensure environment is clean before starting any task
+        echo "[INFO] Cleaning up ray and potential zombie vllm processes..."
+        ray stop --force >/dev/null 2>&1 || true
+        pkill -f vllm >/dev/null 2>&1 || true
+        sleep 3
+
+        # --- Task 1: Math (DeepScalar) ---
+        TASK1_OUT="${EXP_LOG_DIR}/R${ROUND}_math_deepscalar_${REWARD}.stdout"
+        TASK1_ERR="${EXP_LOG_DIR}/R${ROUND}_math_deepscalar_${REWARD}.stderr"
+        echo "[RUN] Math: DeepScalar | Reward: ${REWARD}"
+        echo "      ➜  Stdout: ${TASK1_OUT}"
+        echo "      ➜  Stderr: ${TASK1_ERR}"
+        bash "${MATH_SCRIPT}" -reward "${REWARD}" -dataset deepscalar -gpus "${GPUS}" > >(tee "${TASK1_OUT}") 2> >(tee "${TASK1_ERR}" >&2)
+        log_failure $? "Math:DeepScalar:${REWARD}"
+        [ $? -ne 0 ] 2>/dev/null; ROUND_FAILED_TASKS+=() # tracked via log_failure
+        echo "[INFO] Cleaning up after Task 1..."
+        ray stop --force >/dev/null 2>&1 || true
+        sleep 2
+
+        # --- Task 2: General Reasoning (General365) ---
+        TASK2_OUT="${EXP_LOG_DIR}/R${ROUND}_math_general365_${REWARD}.stdout"
+        TASK2_ERR="${EXP_LOG_DIR}/R${ROUND}_math_general365_${REWARD}.stderr"
+        echo "[RUN] General: General365 | Reward: ${REWARD}"
+        echo "      ➜  Stdout: ${TASK2_OUT}"
+        echo "      ➜  Stderr: ${TASK2_ERR}"
+        bash "${MATH_SCRIPT}" -reward "${REWARD}" -dataset general365 -gpus "${GPUS}" > >(tee "${TASK2_OUT}") 2> >(tee "${TASK2_ERR}" >&2)
+        log_failure $? "General:General365:${REWARD}"
+        echo "[INFO] Cleaning up after Task 2..."
+        ray stop --force >/dev/null 2>&1 || true
+        sleep 2
+
+        # --- Task 3: Code (DeepCoder) ---
+        TASK3_OUT="${EXP_LOG_DIR}/R${ROUND}_code_deepcoder_${REWARD}.stdout"
+        TASK3_ERR="${EXP_LOG_DIR}/R${ROUND}_code_deepcoder_${REWARD}.stderr"
+        echo "[RUN] Code: DeepCoder | Reward: ${REWARD}"
+        echo "      ➜  Stdout: ${TASK3_OUT}"
+        echo "      ➜  Stderr: ${TASK3_ERR}"
+        bash "${CODE_SCRIPT}" -reward "${REWARD}" -gpus "${GPUS}" > >(tee "${TASK3_OUT}") 2> >(tee "${TASK3_ERR}" >&2)
+        log_failure $? "Code:DeepCoder:${REWARD}"
+        echo "[INFO] Cleaning up after Task 3..."
+        ray stop --force >/dev/null 2>&1 || true
+        pkill -f "vllm|verl" >/dev/null 2>&1 || true
+        sleep 2
+
+        echo ""
+        echo "[DONE] Completed experiments for reward: ${REWARD}"
+        echo "################################################################"
+        echo ""
+    done
+
+    # Round Summary
     echo ""
+    echo "================================================================"
+    echo "  ROUND ${ROUND} SUMMARY — $(date '+%Y-%m-%d %H:%M:%S')"
+    echo "================================================================"
+    if [ ${#FAILED_TASKS[@]} -eq 0 ]; then
+        echo "[SUCCESS] All experiments in round ${ROUND} completed successfully!"
+    else
+        echo "[WARNING] ${#FAILED_TASKS[@]} total experiment(s) have FAILED so far:"
+        for task in "${FAILED_TASKS[@]}"; do
+            echo "  - ${task}"
+        done
+    fi
+    echo "================================================================"
+    echo ""
+    echo "[INFO] Starting next round in 10 seconds... (Ctrl+C to stop)"
+    sleep 10
 done
-
-echo "All scheduled experiments have finished."
