@@ -354,7 +354,7 @@ SAVE_BEST_CHECKPOINT=${SAVE_BEST_CHECKPOINT:-true}
 BEST_CHECKPOINT_DIRNAME=${BEST_CHECKPOINT_DIRNAME:-"best_reward_checkpoint"}
 BEST_CHECKPOINT_METRIC=${BEST_CHECKPOINT_METRIC:-"auto"}
 
-VLLM_GPU_UTIL=${VLLM_GPU_UTIL:-0.15}
+VLLM_GPU_UTIL=${VLLM_GPU_UTIL:-0.25}
 VLLM_MAX_NUM_SEQS=${VLLM_MAX_NUM_SEQS:-64}
 
 MAX_PROMPT_LENGTH=${MAX_PROMPT_LENGTH:-1024}
@@ -425,6 +425,7 @@ NUM_GPUS=$(awk -F',' '{print NF}' <<< "${CUDA_VISIBLE_DEVICES}")
 
 TRAIN_NGPUS_PER_NODE=${TRAIN_NGPUS_PER_NODE:-${NUM_GPUS}}
 FSDP_SIZE=${FSDP_SIZE:-${TRAIN_NGPUS_PER_NODE}}
+AGENT_NUM_WORKERS=${AGENT_NUM_WORKERS:-${NUM_GPUS}}
 
 if [[ "${TRAIN_PROMPT_MINI_BSZ}" -lt "${FSDP_SIZE}" ]]; then
   TRAIN_PROMPT_MINI_BSZ="${FSDP_SIZE}"
@@ -662,6 +663,7 @@ CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES} python3 -m verl.trainer.main_ppo \
   actor_rollout_ref.rollout.top_p="${TOP_P}" \
   actor_rollout_ref.rollout.max_model_len="${VLLM_MAX_MODEL_LEN:-4096}" \
   actor_rollout_ref.rollout.name=vllm \
+  actor_rollout_ref.rollout.agent.num_workers="${AGENT_NUM_WORKERS}" \
   actor_rollout_ref.ref.fsdp_config.param_offload="${OFFLOAD}" \
   actor_rollout_ref.actor.fsdp_config.fsdp_size="${FSDP_SIZE}" \
   actor_rollout_ref.ref.fsdp_config.fsdp_size="${FSDP_SIZE}" \
