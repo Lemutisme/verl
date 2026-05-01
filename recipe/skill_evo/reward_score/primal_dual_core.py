@@ -66,13 +66,18 @@ class SubrewardConfig:
     lambda_max: float = 4.0
     static_multiplier: float = 1.0
 
+# Default warmup steps: use higher EMA alpha for faster convergence during initial training
+_DEFAULT_WARMUP_STEPS: int = 10
+_DEFAULT_WARMUP_ALPHA: float = 0.30
+
 class GenericRewardCombiner:
     """
     A generic combiner that merges a main reward (acc) with arbitrary subrewards
     using either a static multiplier or dynamic primal-dual adaptive lambdas.
+
+    NOTE: State (_state) is per-instance so that separate combiner instances
+    (e.g. coding vs math) maintain independent EMA and lambda values.
     """
-    _LOCK = Lock()
-    _STATE = GenericPrimalDualState()
 
     def __init__(self, combine_mode: str = "multiplier", subreward_names: List[str] = None, **kwargs):
         """
@@ -93,11 +98,17 @@ class GenericRewardCombiner:
         self.eta_gate_center = _to_float(kwargs.get("eta_gate_center", 0.40), 0.40)
         self.eta_gate_scale = _to_float(kwargs.get("eta_gate_scale", 8.0), 8.0)
         self.ema_alpha = _clip(_to_float(kwargs.get("ema_alpha", 0.05), 0.05), 0.0, 1.0)
+        self.warmup_steps = _to_int(kwargs.get("warmup_steps", _DEFAULT_WARMUP_STEPS), _DEFAULT_WARMUP_STEPS)
+        self.warmup_alpha = _clip(_to_float(kwargs.get("warmup_alpha", _DEFAULT_WARMUP_ALPHA), _DEFAULT_WARMUP_ALPHA), 0.0, 1.0)
         self.update_dual = _to_bool(kwargs.get("update_dual", True), True)
         self.dual_update_on_gated = _to_bool(kwargs.get("dual_update_on_gated", False), False)
         self.normalize_by_dual_mass = _to_bool(kwargs.get("normalize_by_dual_mass", False), False)
         
         self.kwargs = kwargs
+        
+        # Instance-level state and lock (not shared across instances)
+        self._lock = Lock()
+        self._state = GenericPrimalDualState()
         
         self.sub_cfgs: Dict[str, SubrewardConfig] = {}
         for name in self.subreward_names:
@@ -131,28 +142,27 @@ class GenericRewardCombiner:
             
         for name in sorted(list(new_keys)):
             if name not in self.subreward_names:
-                with self._LOCK:
+                with self._lock:
                     if name not in self.subreward_names:
                         self.subreward_names.append(name)
                         self._register_subreward(name)
                         # Initialize state for new subreward if we are already mid-training
-                        if name not in self._STATE.lambdas:
-                            self._STATE.lambdas[name] = 0.0
-                        if name not in self._STATE.ema_subrewards:
-                            self._STATE.ema_subrewards[name] = 0.0
+                        if name not in self._state.lambdas:
+                            self._state.lambdas[name] = 0.0
+                        if name not in self._state.ema_subrewards:
+                            self._state.ema_subrewards[name] = 0.0
 
-    @classmethod
-    def reset_state(cls):
-        with cls._LOCK:
-            cls._STATE = GenericPrimalDualState()
+    def reset_state(self):
+        with self._lock:
+            self._state = GenericPrimalDualState()
 
     def _get_pricing_context(self, fallback_perf: float) -> Tuple[Dict[str, float], Dict[str, float]]:
-        with self._LOCK:
-            perf_ref = self._STATE.ema_perf if self._STATE.step > 0 else _clip01(fallback_perf)
+        with self._lock:
+            perf_ref = self._state.ema_perf if self._state.step > 0 else _clip01(fallback_perf)
             lambdas = {}
             taus = {}
             for name, cfg in self.sub_cfgs.items():
-                lambdas[name] = self._STATE.lambdas.get(name, 0.0)
+                lambdas[name] = self._state.lambdas.get(name, 0.0)
                 taus[name] = _adaptive_tau(perf_ref, cfg.tau_min, cfg.tau_max, self.perf_lo, self.perf_hi)
             return lambdas, taus
 
@@ -170,30 +180,32 @@ class GenericRewardCombiner:
         for name in self.subreward_names:
             avg_subs[name] = sum(subrewards_list[i].get(name, 0.0) for i in used_idx) / n
 
-        with self._LOCK:
-            if self._STATE.step == 0:
-                self._STATE.ema_perf = _clip01(avg_perf)
-                for name in self.subreward_names:
-                    self._STATE.ema_subrewards[name] = _clip01(avg_subs[name])
-                    if name not in self._STATE.lambdas:
-                        self._STATE.lambdas[name] = 0.0
-            else:
-                a = self.ema_alpha
-                self._STATE.ema_perf = _clip01((1.0 - a) * self._STATE.ema_perf + a * avg_perf)
-                for name in self.subreward_names:
-                    self._STATE.ema_subrewards[name] = _clip01((1.0 - a) * self._STATE.ema_subrewards.get(name, 0.0) + a * avg_subs[name])
+        with self._lock:
+            # Use higher alpha during warmup for faster convergence
+            a = self.warmup_alpha if self._state.step < self.warmup_steps else self.ema_alpha
 
-            perf_ref = self._STATE.ema_perf
-            self._STATE.step += 1
+            if self._state.step == 0:
+                self._state.ema_perf = _clip01(avg_perf)
+                for name in self.subreward_names:
+                    self._state.ema_subrewards[name] = _clip01(avg_subs[name])
+                    if name not in self._state.lambdas:
+                        self._state.lambdas[name] = 0.0
+            else:
+                self._state.ema_perf = _clip01((1.0 - a) * self._state.ema_perf + a * avg_perf)
+                for name in self.subreward_names:
+                    self._state.ema_subrewards[name] = _clip01((1.0 - a) * self._state.ema_subrewards.get(name, 0.0) + a * avg_subs[name])
+
+            perf_ref = self._state.ema_perf
+            self._state.step += 1
 
             for name, cfg in self.sub_cfgs.items():
                 tau_name = _adaptive_tau(perf_ref, cfg.tau_min, cfg.tau_max, self.perf_lo, self.perf_hi)
-                eta_name = _adaptive_eta(cfg.eta0, perf_ref, self.eta_gate_center, self.eta_gate_scale, self._STATE.step)
+                eta_name = _adaptive_eta(cfg.eta0, perf_ref, self.eta_gate_center, self.eta_gate_scale, self._state.step)
                 
-                curr_lambda = self._STATE.lambdas.get(name, 0.0)
-                curr_ema_sub = self._STATE.ema_subrewards.get(name, 0.0)
+                curr_lambda = self._state.lambdas.get(name, 0.0)
+                curr_ema_sub = self._state.ema_subrewards.get(name, 0.0)
                 
-                self._STATE.lambdas[name] = _clip(curr_lambda + eta_name * (tau_name - curr_ema_sub), 0.0, cfg.lambda_max)
+                self._state.lambdas[name] = _clip(curr_lambda + eta_name * (tau_name - curr_ema_sub), 0.0, cfg.lambda_max)
 
     def process_batch(self, main_rewards: List[float], subrewards_list: List[Dict[str, float]]) -> List[Dict[str, float]]:
         """
@@ -215,8 +227,8 @@ class GenericRewardCombiner:
             lambdas, taus = self._get_pricing_context(fallback_perf=batch_perf)
             self._update_duals(main_rewards, subrewards_list)
             
-            with self._LOCK:
-                state_dict = self._STATE.asdict()
+            with self._lock:
+                state_dict = self._state.asdict()
                 
             for idx, s_perf in enumerate(main_rewards):
                 if s_perf <= self.perf_gate:
@@ -232,7 +244,8 @@ class GenericRewardCombiner:
                         if denom > 0:
                             reward = reward / denom
                             
-                reward = _clip01(reward)
+                # PD rewards can be negative (penalty signal); clip to [-1, 1]
+                reward = _clip(reward, -1.0, 1.0)
                 info = {
                     "score": float(reward),
                     "combined_reward": float(reward),
@@ -257,7 +270,8 @@ class GenericRewardCombiner:
                     for name, cfg in self.sub_cfgs.items():
                         s_sub = subrewards_list[idx].get(name, 0.0)
                         reward += cfg.static_multiplier * s_sub
-                        
+
+                reward = _clip01(reward)
                 info = {
                     "score": float(reward),
                     "combined_reward": float(reward),

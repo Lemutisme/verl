@@ -1,5 +1,6 @@
 import os
 import sys
+from typing import Any
 
 # Add current directory to sys.path to allow importing local reward_score package
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -16,7 +17,6 @@ import reward_score.deepcoder_action_thought_reward as deepcoder_evaluator
 
 # Initialize the generic combiner (will parse kwargs for combine_mode="pd"|"multiplier")
 # We delay initialization until the first call to ensure we have the kwargs
-_combiner = None
 
 
 MATH_DATA_SOURCES = {
@@ -34,7 +34,7 @@ MATH_DATA_SOURCES = {
 _COMBINER_CACHE = {}
 
 def _get_combiner(kwargs: dict[str, Any]) -> GenericRewardCombiner:
-    print(f"DEBUG: _get_combiner called with kwargs={kwargs}")
+
     combine_mode = str(kwargs.get("combine_mode", "none")).lower()
     if combine_mode not in _COMBINER_CACHE:
         combiner_kwargs = {k: v for k, v in kwargs.items() if k not in ["combine_mode"]}
@@ -72,7 +72,12 @@ def _score_math(data_source, solution_str, ground_truth, extra_info=None, **kwar
 
     combine_mode = str(kwargs.get("combine_mode", "none")).lower()
     if combine_mode == "none" or not to_bool(kwargs.get("math_enable_sub_rewards", False), False):
-        print(f"DEBUG bypass: combine_mode={combine_mode}, math_enable_sub_rewards={kwargs.get('math_enable_sub_rewards')}")
+        if to_bool(kwargs.get("math_signed_reward", True), True):
+            signed_score = 1.0 if base_acc else -1.0
+            if isinstance(base_res, dict):
+                base_res["score"] = signed_score
+            else:
+                base_res = signed_score
         return base_res
 
     ctx = {
@@ -86,6 +91,12 @@ def _score_math(data_source, solution_str, ground_truth, extra_info=None, **kwar
     }
     subrewards = collect_subrewards("math", ctx, **kwargs)
     if not subrewards:
+        if to_bool(kwargs.get("math_signed_reward", True), True):
+            signed_score = 1.0 if base_acc else -1.0
+            if isinstance(base_res, dict):
+                base_res["score"] = signed_score
+            else:
+                base_res = signed_score
         return base_res
 
     combiner = _get_combiner(kwargs)
@@ -93,7 +104,10 @@ def _score_math(data_source, solution_str, ground_truth, extra_info=None, **kwar
     info = combiner.process_batch([main_reward], [subrewards])[0]
 
     if to_bool(kwargs.get("math_signed_reward", True), True):
-        info["score"] = 2.0 * clip(info["score"]) - 1.0
+        if combine_mode == "pd":
+            info["score"] = clip(info["score"], -1.0, 1.0)
+        else:
+            info["score"] = 2.0 * clip(info["score"], 0.0, 1.0) - 1.0
         info["combined_reward"] = info["score"]
 
     info["base_math_score"] = float(base_score)
@@ -104,7 +118,8 @@ def _score_math(data_source, solution_str, ground_truth, extra_info=None, **kwar
     return info
 
 def compute_score(data_source, solution_str, ground_truth, extra_info=None, **kwargs):
-    if data_source in MATH_DATA_SOURCES or data_source.startswith("aime"):
+    ds_str = str(data_source)
+    if ds_str in MATH_DATA_SOURCES or ds_str.startswith("aime") or ds_str.startswith("deepscalar"):
         return _score_math(data_source, solution_str, ground_truth, extra_info=extra_info, **kwargs)
 
     combiner = _get_combiner(kwargs)
@@ -114,14 +129,18 @@ def compute_score(data_source, solution_str, ground_truth, extra_info=None, **kw
         res = mbpp_evaluator.compute_score_mbpp(solution_str, ground_truth, return_components=True, **kwargs)
         
         # Determine if it's a batch or single
+        if not isinstance(res, (list, dict)):
+            # Fallback: tuple (main_reward, subrewards)
+            main_reward, subrewards = res
+            res = {"main_reward": main_reward, "subrewards": subrewards}
+
         if isinstance(res, list):
             main_rewards = [r["main_reward"] for r in res]
             subrewards_list = [r["subrewards"] for r in res]
             infos = combiner.process_batch(main_rewards, subrewards_list)
             return [info["score"] for info in infos]
         else:
-            main_reward, subrewards = res
-            infos = combiner.process_batch([main_reward], [subrewards])
+            infos = combiner.process_batch([res["main_reward"]], [res["subrewards"]])
             return infos[0] if infos else 0.0
             
     elif data_source.startswith("deepcoder"):
@@ -136,14 +155,18 @@ def compute_score(data_source, solution_str, ground_truth, extra_info=None, **kw
             **kwargs
         )
         
+        if not isinstance(res, (list, dict)):
+            # Fallback: tuple (main_reward, subrewards)
+            main_reward, subrewards = res
+            res = {"main_reward": main_reward, "subrewards": subrewards}
+
         if isinstance(res, list):
             main_rewards = [r["main_reward"] for r in res]
             subrewards_list = [r["subrewards"] for r in res]
             infos = combiner.process_batch(main_rewards, subrewards_list)
             return [info["score"] for info in infos]
         else:
-            main_reward, subrewards = res
-            infos = combiner.process_batch([main_reward], [subrewards])
+            infos = combiner.process_batch([res["main_reward"]], [res["subrewards"]])
             return infos[0] if infos else 0.0
 
     # Fallback to the default compute score for other data sources

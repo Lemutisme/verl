@@ -4,11 +4,20 @@ from typing import Any
 from ..common import extract_code, parse_python
 
 
+def _link_parents(tree: ast.AST) -> None:
+    """Set _parent attribute on every AST node so we can walk up the tree."""
+    for node in ast.walk(tree):
+        for child in ast.iter_child_nodes(node):
+            child._parent = node  # type: ignore[attr-defined]
+
+
 def compute(ctx: dict[str, Any], **_: Any) -> float:
     code = ctx.get("code") or extract_code(ctx.get("response", ""))
     tree = parse_python(code)
     if tree is None:
         return 0.0
+
+    _link_parents(tree)
 
     score = 1.0
     has_callable = False

@@ -136,7 +136,11 @@ def get_custom_reward_fn(config: DictConfig) -> Optional[RawRewardFn]:
 
     raw_fn = load_extern_object(module_path=module_path, object_name=fn_name)
 
-    reward_kwargs = dict(reward_fn_config.get("reward_kwargs", {}))
+    # Merge reward_kwargs from reward_model (base) and custom_reward_function (override)
+    base_kwargs = dict(config.get("reward_model", {}).get("reward_kwargs", {}))
+    custom_kwargs = dict(reward_fn_config.get("reward_kwargs", {}))
+    reward_kwargs = {**base_kwargs, **custom_kwargs}
+
     if not inspect.iscoroutinefunction(raw_fn):
         return partial(_call_with_kwargs, raw_fn, reward_kwargs)
     else:

@@ -10,11 +10,13 @@ def compute(ctx: dict[str, Any], **_: Any) -> float:
     if not lines:
         return 0.0
 
+    # Incremental prefix validity check — O(n) parse calls instead of O(n²)
     checkpoints = []
-    for idx in range(1, len(lines) + 1):
-        prefix = "\n".join(lines[:idx])
+    prefix = ""
+    for line in lines:
+        prefix = prefix + line + "\n" if prefix else line + "\n"
         try:
-            ast.parse(prefix)
+            compile(prefix, "<string>", "exec")
             checkpoints.append(1.0)
         except SyntaxError:
             checkpoints.append(0.0)

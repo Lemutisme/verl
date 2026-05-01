@@ -23,7 +23,7 @@ DEFAULT_ENABLED = {
         "boxed_format_reward": True,
         "step_reachability_reward": True,
         "progress_reward": True,
-        "process_reward_model_score": True,
+        "reasoning_quality_heuristic": True,
         "reasoning_distance_reward": True,
     },
 }
@@ -41,7 +41,7 @@ DEFAULT_WEIGHTS = {
         "boxed_format_reward": 0.10,
         "step_reachability_reward": 0.10,
         "progress_reward": 0.10,
-        "process_reward_model_score": 0.10,
+        "reasoning_quality_heuristic": 0.10,
         "reasoning_distance_reward": 0.08,
     },
 }
