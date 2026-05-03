@@ -18,6 +18,7 @@ Options:
   -name, --name             Optional run name suffix; default is timestamp + pid
   -gpus, --gpus             Override CUDA_VISIBLE_DEVICES for this run
   --save_freq               Set checkpoint saving frequency (e.g. -1 to disable)
+  -steps, --steps           Total training steps (default: 1000)
 
 Math sub-reward env knobs:
   MATH_ENABLE_SUB_REWARDS=true/false
@@ -48,6 +49,7 @@ CLI_CUDA_VISIBLE_DEVICES=""
 CLI_KL_COEF=""
 CLI_KL_TYPE=""
 CLI_SAVE_FREQ=""
+CLI_TOTAL_STEPS=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -99,6 +101,11 @@ while [[ $# -gt 0 ]]; do
     --save_freq)
       [[ $# -ge 2 ]] || { echo "Missing value for $1" >&2; usage; exit 1; }
       CLI_SAVE_FREQ="$2"
+      shift 2
+      ;;
+    -steps|--steps)
+      [[ $# -ge 2 ]] || { echo "Missing value for $1" >&2; usage; exit 1; }
+      CLI_TOTAL_STEPS="$2"
       shift 2
       ;;
     -h|--help)
@@ -351,9 +358,10 @@ EXP_NAME=${EXP_NAME:-"${DEFAULT_EXP_NAME}"}
 
 ADV_ESTIMATOR=${ADV_ESTIMATOR:-"grpo"}
 
-SAVE_EVERY_STEPS=${CLI_SAVE_FREQ:-${SAVE_EVERY_STEPS:-5}}
+SAVE_EVERY_STEPS=${CLI_SAVE_FREQ:-${SAVE_EVERY_STEPS:--1}}
 EVAL_EVERY_STEPS=${EVAL_EVERY_STEPS:-5}
 TOTAL_EPOCHS=${TOTAL_EPOCHS:-10}
+TOTAL_STEPS=${CLI_TOTAL_STEPS:-${TOTAL_STEPS:-1000}}
 SAVE_BEST_CHECKPOINT=${SAVE_BEST_CHECKPOINT:-true}
 BEST_CHECKPOINT_DIRNAME=${BEST_CHECKPOINT_DIRNAME:-"best_reward_checkpoint"}
 BEST_CHECKPOINT_METRIC=${BEST_CHECKPOINT_METRIC:-"auto"}
@@ -584,6 +592,7 @@ CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES} python3 -m verl.trainer.main_ppo \
   trainer.save_freq="${SAVE_EVERY_STEPS}" \
   trainer.test_freq="${EVAL_EVERY_STEPS}" \
   trainer.total_epochs="${TOTAL_EPOCHS}" \
+  trainer.total_training_steps="${TOTAL_STEPS}" \
   trainer.default_local_dir="${CKPTS_DIR}" \
   trainer.max_actor_ckpt_to_keep=5 \
   trainer.max_critic_ckpt_to_keep=5 \

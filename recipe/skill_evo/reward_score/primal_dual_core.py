@@ -89,7 +89,7 @@ class GenericRewardCombiner:
             
         self.subreward_names = subreward_names or []
         
-        self.perf_gate = _clip01(_to_float(kwargs.get("perf_gate", 0.0), 0.0))
+        self.perf_gate = _to_float(kwargs.get("perf_gate", -1.0), -1.0) # Default to -1.0 to allow sub-rewards when acc is 0
         self.perf_lo = _clip01(_to_float(kwargs.get("perf_lo", 0.20), 0.20))
         self.perf_hi = _clip01(_to_float(kwargs.get("perf_hi", 0.90), 0.90))
         if self.perf_hi <= self.perf_lo:
@@ -231,7 +231,8 @@ class GenericRewardCombiner:
                 state_dict = self._state.asdict()
                 
             for idx, s_perf in enumerate(main_rewards):
-                if s_perf <= self.perf_gate:
+                # Only apply perf_gate if it's explicitly positive
+                if self.perf_gate > 0 and s_perf < self.perf_gate:
                     reward = 0.0
                 else:
                     reward = s_perf
@@ -263,7 +264,7 @@ class GenericRewardCombiner:
                 
         elif self.combine_mode == "multiplier":
             for idx, s_perf in enumerate(main_rewards):
-                if s_perf <= self.perf_gate:
+                if self.perf_gate > 0 and s_perf < self.perf_gate:
                     reward = 0.0
                 else:
                     reward = s_perf
