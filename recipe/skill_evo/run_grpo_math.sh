@@ -23,7 +23,7 @@ Options:
 Math/general sub-reward env knobs:
   MATH_ENABLE_SUB_REWARDS=true/false
   MATH_ENABLE_<NAME>=true/false and MATH_WEIGHT_<NAME>=float
-  Name: ANSWER_EFFICIENCY_REWARD
+  Names: FINAL_ANSWER_REWARD, ANSWER_EFFICIENCY_REWARD, CONSISTENCY_REWARD
   MATH_EFFICIENCY_MIN_TOKENS / MAX_TOKENS / POST_ANSWER_MAX_TOKENS tune brevity.
   -h, --help                Show this help message
 EOF
@@ -182,8 +182,13 @@ case "${REWARD_KIND}" in
 esac
 
 MATH_SIGNED_REWARD=${MATH_SIGNED_REWARD:-true}
+MATH_PERF_GATE=${MATH_PERF_GATE:--1.0}
+MATH_ENABLE_FINAL_ANSWER_REWARD=${MATH_ENABLE_FINAL_ANSWER_REWARD:-true}
+MATH_WEIGHT_FINAL_ANSWER_REWARD=${MATH_WEIGHT_FINAL_ANSWER_REWARD:-0.20}
 MATH_ENABLE_ANSWER_EFFICIENCY_REWARD=${MATH_ENABLE_ANSWER_EFFICIENCY_REWARD:-true}
-MATH_WEIGHT_ANSWER_EFFICIENCY_REWARD=${MATH_WEIGHT_ANSWER_EFFICIENCY_REWARD:-0.20}
+MATH_WEIGHT_ANSWER_EFFICIENCY_REWARD=${MATH_WEIGHT_ANSWER_EFFICIENCY_REWARD:-0.15}
+MATH_ENABLE_CONSISTENCY_REWARD=${MATH_ENABLE_CONSISTENCY_REWARD:-true}
+MATH_WEIGHT_CONSISTENCY_REWARD=${MATH_WEIGHT_CONSISTENCY_REWARD:-0.10}
 MATH_EFFICIENCY_MIN_TOKENS=${MATH_EFFICIENCY_MIN_TOKENS:-16}
 case "${DATASET}" in
   general365)
@@ -565,10 +570,15 @@ CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES} python3 -m verl.trainer.main_ppo \
   ++custom_reward_function.path="${SCRIPT_DIR}/custom_reward.py" \
   ++custom_reward_function.name="compute_score" \
   ++reward_model.reward_kwargs.combine_mode="${COMBINE_MODE}" \
+  ++reward_model.reward_kwargs.perf_gate="${MATH_PERF_GATE}" \
   ++reward_model.reward_kwargs.math_enable_sub_rewards="${MATH_ENABLE_SUB_REWARDS}" \
   ++reward_model.reward_kwargs.math_signed_reward="${MATH_SIGNED_REWARD}" \
+  ++reward_model.reward_kwargs.math_enable_final_answer_reward="${MATH_ENABLE_FINAL_ANSWER_REWARD}" \
+  ++reward_model.reward_kwargs.math_weight_final_answer_reward="${MATH_WEIGHT_FINAL_ANSWER_REWARD}" \
   ++reward_model.reward_kwargs.math_enable_answer_efficiency_reward="${MATH_ENABLE_ANSWER_EFFICIENCY_REWARD}" \
   ++reward_model.reward_kwargs.math_weight_answer_efficiency_reward="${MATH_WEIGHT_ANSWER_EFFICIENCY_REWARD}" \
+  ++reward_model.reward_kwargs.math_enable_consistency_reward="${MATH_ENABLE_CONSISTENCY_REWARD}" \
+  ++reward_model.reward_kwargs.math_weight_consistency_reward="${MATH_WEIGHT_CONSISTENCY_REWARD}" \
   ++reward_model.reward_kwargs.math_efficiency_min_tokens="${MATH_EFFICIENCY_MIN_TOKENS}" \
   ++reward_model.reward_kwargs.math_efficiency_max_tokens="${MATH_EFFICIENCY_MAX_TOKENS}" \
   ++reward_model.reward_kwargs.math_efficiency_post_answer_max_tokens="${MATH_EFFICIENCY_POST_ANSWER_MAX_TOKENS}" \

@@ -80,16 +80,6 @@ def _score_math(data_source, solution_str, ground_truth, extra_info=None, **kwar
                 base_res = signed_score
         return base_res
 
-    if not base_acc:
-        if to_bool(kwargs.get("math_signed_reward", True), True):
-            if isinstance(base_res, dict):
-                base_res["score"] = -1.0
-                base_res["combined_reward"] = -1.0
-                base_res["acc"] = False
-                return base_res
-            return -1.0
-        return base_res
-
     ctx = {
         "response": solution_str,
         "solution_str": solution_str,

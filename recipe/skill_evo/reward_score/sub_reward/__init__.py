@@ -19,7 +19,9 @@ DEFAULT_ENABLED = {
         "block_level_process_reward": True,
     },
     "math": {
+        "final_answer_reward": True,
         "answer_efficiency_reward": True,
+        "consistency_reward": True,
     },
 }
 
@@ -32,7 +34,9 @@ DEFAULT_WEIGHTS = {
         "block_level_process_reward": 0.10,
     },
     "math": {
-        "answer_efficiency_reward": 0.20,
+        "final_answer_reward": 0.20,
+        "answer_efficiency_reward": 0.15,
+        "consistency_reward": 0.10,
     },
 }
 
