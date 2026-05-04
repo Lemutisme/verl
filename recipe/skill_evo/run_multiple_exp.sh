@@ -5,12 +5,17 @@
 
 # Default values
 GPUS=""
+STEPS="1000"
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -gpus)
       GPUS="$2"
+      shift 2
+      ;;
+    -steps|--steps)
+      STEPS="$2"
       shift 2
       ;;
     *)
@@ -123,12 +128,21 @@ while true; do
         sleep 3
 
         # --- Task 1: Math (DeepScalar) ---
+        # Align with DeepCoder high-performance config
+        export VLLM_GPU_UTIL=0.35
+        export VLLM_MAX_NUM_SEQS=128
+        export TRAIN_PROMPT_BSZ=4
+        export GEN_PROMPT_BSZ=16
+        export N_RESP_PER_PROMPT=4
+        export TRAIN_PROMPT_MINI_BSZ=4
+        export OFFLOAD=false
+
         TASK1_OUT="${EXP_LOG_DIR}/R${ROUND}_math_deepscalar_${REWARD}.stdout"
         TASK1_ERR="${EXP_LOG_DIR}/R${ROUND}_math_deepscalar_${REWARD}.stderr"
         echo "[RUN] Math: DeepScalar | Reward: ${REWARD}"
         echo "      ➜  Stdout: ${TASK1_OUT}"
         echo "      ➜  Stderr: ${TASK1_ERR}"
-        bash "${MATH_SCRIPT}" -reward "${REWARD}" -dataset deepscalar -gpus "${GPUS}" > >(tee "${TASK1_OUT}") 2> >(tee "${TASK1_ERR}" >&2)
+        bash "${MATH_SCRIPT}" -reward "${REWARD}" -dataset deepscalar -gpus "${GPUS}" -steps "${STEPS}" > >(tee "${TASK1_OUT}") 2> >(tee "${TASK1_ERR}" >&2)
         log_failure $? "Math:DeepScalar:${REWARD}"
         [ $? -ne 0 ] 2>/dev/null; ROUND_FAILED_TASKS+=() # tracked via log_failure
         echo "[INFO] Cleaning up after Task 1..."
@@ -136,12 +150,13 @@ while true; do
         sleep 2
 
         # --- Task 2: General Reasoning (General365) ---
+        # Keep same high-performance config for general tasks
         TASK2_OUT="${EXP_LOG_DIR}/R${ROUND}_math_general365_${REWARD}.stdout"
         TASK2_ERR="${EXP_LOG_DIR}/R${ROUND}_math_general365_${REWARD}.stderr"
         echo "[RUN] General: General365 | Reward: ${REWARD}"
         echo "      ➜  Stdout: ${TASK2_OUT}"
         echo "      ➜  Stderr: ${TASK2_ERR}"
-        bash "${MATH_SCRIPT}" -reward "${REWARD}" -dataset general365 -gpus "${GPUS}" > >(tee "${TASK2_OUT}") 2> >(tee "${TASK2_ERR}" >&2)
+        bash "${MATH_SCRIPT}" -reward "${REWARD}" -dataset general365 -gpus "${GPUS}" -steps "${STEPS}" > >(tee "${TASK2_OUT}") 2> >(tee "${TASK2_ERR}" >&2)
         log_failure $? "General:General365:${REWARD}"
         echo "[INFO] Cleaning up after Task 2..."
         ray stop --force >/dev/null 2>&1 || true
