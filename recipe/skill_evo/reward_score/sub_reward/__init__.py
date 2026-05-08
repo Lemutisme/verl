@@ -19,12 +19,9 @@ DEFAULT_ENABLED = {
         "block_level_process_reward": True,
     },
     "math": {
-        "final_answer_reward": False,
-        "boxed_format_reward": True,
-        "step_reachability_reward": True,
-        "progress_reward": True,
-        "reasoning_quality_heuristic": True,
-        "reasoning_distance_reward": True,
+        "final_answer_reward": True,
+        "answer_efficiency_reward": True,
+        "consistency_reward": True,
     },
 }
 
@@ -37,12 +34,9 @@ DEFAULT_WEIGHTS = {
         "block_level_process_reward": 0.10,
     },
     "math": {
-        "final_answer_reward": 0.0,
-        "boxed_format_reward": 0.10,
-        "step_reachability_reward": 0.10,
-        "progress_reward": 0.10,
-        "reasoning_quality_heuristic": 0.10,
-        "reasoning_distance_reward": 0.08,
+        "final_answer_reward": 0.20,
+        "answer_efficiency_reward": 0.15,
+        "consistency_reward": 0.10,
     },
 }
 
