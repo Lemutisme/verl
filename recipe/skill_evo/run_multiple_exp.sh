@@ -41,9 +41,9 @@ else
 fi
 
 # 2. Experiment Matrix
-REWARDS=("ori" "new" "pd")
+REWARDS=("new" "pd" "ori")
 # Datasets for run_grpo_math.sh
-MATH_DATASETS=("deepscalar" "general365")
+MATH_DATASETS=("general365" "deepscalar")
 
 # Paths to scripts
 # run_grpo_math.sh is in the same directory
@@ -129,7 +129,7 @@ while true; do
 
         # --- Task 1: Math (DeepScalar) ---
         # Align with DeepCoder high-performance config
-        export VLLM_GPU_UTIL=0.35
+        export VLLM_GPU_UTIL=0.3
         export VLLM_MAX_NUM_SEQS=128
         export TRAIN_PROMPT_BSZ=4
         export GEN_PROMPT_BSZ=16

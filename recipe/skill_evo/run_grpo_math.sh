@@ -341,7 +341,7 @@ export CUDA_DEVICE_ORDER=PCI_BUS_ID
 export HYDRA_FULL_ERROR=1
 export RAY_DEDUP_LOGS=0
 export PYTHONUNBUFFERED=1
-# export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True" # Incompatible with vLLM engine init
+export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:False"
 
 RAY_ADDRESS=${RAY_ADDRESS:-""}
 
@@ -431,7 +431,7 @@ if [[ -d "${CKPTS_DIR}" ]] && find "${CKPTS_DIR}" -mindepth 1 -maxdepth 1 -print
 fi
 mkdir -p "${CKPTS_DIR}"
 
-RAY_TMP_ROOT=${RAY_TMP_ROOT:-"/shared/nas2/yujiz/rl/ray_tmp"}
+RAY_TMP_ROOT=${RAY_TMP_ROOT:-"/tmp/ray_yujiz"}
 RAY_TMP_TAG=${RAY_TMP_TAG:-"$(date +%m%d%H%M%S)_$$"}
 RAY_TMPDIR=${RAY_TMPDIR:-"${RAY_TMP_ROOT}"}
 mkdir -p "${RAY_TMPDIR}"

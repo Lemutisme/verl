@@ -319,7 +319,7 @@ export CUDA_DEVICE_ORDER=PCI_BUS_ID
 export HYDRA_FULL_ERROR=1
 export RAY_DEDUP_LOGS=0
 export PYTHONUNBUFFERED=1
-# export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True" # Incompatible with vLLM engine init
+export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:False"
 
 RAY_ADDRESS=${RAY_ADDRESS:-""}
 

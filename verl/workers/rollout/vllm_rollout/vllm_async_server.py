@@ -416,11 +416,6 @@ class vLLMHttpServerBase:
         if "disable_log_stats" in fn_args:
             kwargs["disable_log_stats"] = engine_args.disable_log_stats
 
-        import sys
-        print(f"DEBUG: vllm_config={vllm_config}", file=sys.stderr)
-        print(f"DEBUG: usage_context={usage_context}", file=sys.stderr)
-        print(f"DEBUG: kwargs={kwargs}", file=sys.stderr)
-        
         try:
             engine_client = AsyncLLM.from_vllm_config(vllm_config=vllm_config, usage_context=usage_context, **kwargs)
         except Exception as e:
