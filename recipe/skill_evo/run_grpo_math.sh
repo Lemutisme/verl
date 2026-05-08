@@ -20,11 +20,11 @@ Options:
   --save_freq               Set checkpoint saving frequency (e.g. -1 to disable)
   -steps, --steps           Total training steps (default: 1000)
 
-Math sub-reward env knobs:
+Math/general sub-reward env knobs:
   MATH_ENABLE_SUB_REWARDS=true/false
   MATH_ENABLE_<NAME>=true/false and MATH_WEIGHT_<NAME>=float
-  Names: FINAL_ANSWER_REWARD, BOXED_FORMAT_REWARD, STEP_REACHABILITY_REWARD,
-         PROGRESS_REWARD, PROCESS_REWARD_MODEL_SCORE, REASONING_DISTANCE_REWARD
+  Names: FINAL_ANSWER_REWARD, ANSWER_EFFICIENCY_REWARD, CONSISTENCY_REWARD
+  MATH_EFFICIENCY_MIN_TOKENS / MAX_TOKENS / POST_ANSWER_MAX_TOKENS tune brevity.
   -h, --help                Show this help message
 EOF
 }
@@ -182,18 +182,26 @@ case "${REWARD_KIND}" in
 esac
 
 MATH_SIGNED_REWARD=${MATH_SIGNED_REWARD:-true}
-MATH_ENABLE_FINAL_ANSWER_REWARD=${MATH_ENABLE_FINAL_ANSWER_REWARD:-false}
-MATH_WEIGHT_FINAL_ANSWER_REWARD=${MATH_WEIGHT_FINAL_ANSWER_REWARD:-0.0}
-MATH_ENABLE_BOXED_FORMAT_REWARD=${MATH_ENABLE_BOXED_FORMAT_REWARD:-true}
-MATH_WEIGHT_BOXED_FORMAT_REWARD=${MATH_WEIGHT_BOXED_FORMAT_REWARD:-0.10}
-MATH_ENABLE_STEP_REACHABILITY_REWARD=${MATH_ENABLE_STEP_REACHABILITY_REWARD:-true}
-MATH_WEIGHT_STEP_REACHABILITY_REWARD=${MATH_WEIGHT_STEP_REACHABILITY_REWARD:-0.10}
-MATH_ENABLE_PROGRESS_REWARD=${MATH_ENABLE_PROGRESS_REWARD:-true}
-MATH_WEIGHT_PROGRESS_REWARD=${MATH_WEIGHT_PROGRESS_REWARD:-0.10}
-MATH_ENABLE_PROCESS_REWARD_MODEL_SCORE=${MATH_ENABLE_PROCESS_REWARD_MODEL_SCORE:-true}
-MATH_WEIGHT_PROCESS_REWARD_MODEL_SCORE=${MATH_WEIGHT_PROCESS_REWARD_MODEL_SCORE:-0.10}
-MATH_ENABLE_REASONING_DISTANCE_REWARD=${MATH_ENABLE_REASONING_DISTANCE_REWARD:-true}
-MATH_WEIGHT_REASONING_DISTANCE_REWARD=${MATH_WEIGHT_REASONING_DISTANCE_REWARD:-0.08}
+MATH_PERF_GATE=${MATH_PERF_GATE:--1.0}
+MATH_ENABLE_FINAL_ANSWER_REWARD=${MATH_ENABLE_FINAL_ANSWER_REWARD:-true}
+MATH_WEIGHT_FINAL_ANSWER_REWARD=${MATH_WEIGHT_FINAL_ANSWER_REWARD:-0.20}
+MATH_ENABLE_ANSWER_EFFICIENCY_REWARD=${MATH_ENABLE_ANSWER_EFFICIENCY_REWARD:-true}
+MATH_WEIGHT_ANSWER_EFFICIENCY_REWARD=${MATH_WEIGHT_ANSWER_EFFICIENCY_REWARD:-0.15}
+MATH_ENABLE_CONSISTENCY_REWARD=${MATH_ENABLE_CONSISTENCY_REWARD:-true}
+MATH_WEIGHT_CONSISTENCY_REWARD=${MATH_WEIGHT_CONSISTENCY_REWARD:-0.10}
+MATH_EFFICIENCY_MIN_TOKENS=${MATH_EFFICIENCY_MIN_TOKENS:-16}
+case "${DATASET}" in
+  general365)
+    MATH_EFFICIENCY_MAX_TOKENS=${MATH_EFFICIENCY_MAX_TOKENS:-320}
+    ;;
+  deepscalar)
+    MATH_EFFICIENCY_MAX_TOKENS=${MATH_EFFICIENCY_MAX_TOKENS:-512}
+    ;;
+  *)
+    MATH_EFFICIENCY_MAX_TOKENS=${MATH_EFFICIENCY_MAX_TOKENS:-384}
+    ;;
+esac
+MATH_EFFICIENCY_POST_ANSWER_MAX_TOKENS=${MATH_EFFICIENCY_POST_ANSWER_MAX_TOKENS:-24}
 
 case "${KL_MODE}" in
   none|off|false|no)
@@ -562,20 +570,18 @@ CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES} python3 -m verl.trainer.main_ppo \
   ++custom_reward_function.path="${SCRIPT_DIR}/custom_reward.py" \
   ++custom_reward_function.name="compute_score" \
   ++reward_model.reward_kwargs.combine_mode="${COMBINE_MODE}" \
+  ++reward_model.reward_kwargs.perf_gate="${MATH_PERF_GATE}" \
   ++reward_model.reward_kwargs.math_enable_sub_rewards="${MATH_ENABLE_SUB_REWARDS}" \
   ++reward_model.reward_kwargs.math_signed_reward="${MATH_SIGNED_REWARD}" \
   ++reward_model.reward_kwargs.math_enable_final_answer_reward="${MATH_ENABLE_FINAL_ANSWER_REWARD}" \
   ++reward_model.reward_kwargs.math_weight_final_answer_reward="${MATH_WEIGHT_FINAL_ANSWER_REWARD}" \
-  ++reward_model.reward_kwargs.math_enable_boxed_format_reward="${MATH_ENABLE_BOXED_FORMAT_REWARD}" \
-  ++reward_model.reward_kwargs.math_weight_boxed_format_reward="${MATH_WEIGHT_BOXED_FORMAT_REWARD}" \
-  ++reward_model.reward_kwargs.math_enable_step_reachability_reward="${MATH_ENABLE_STEP_REACHABILITY_REWARD}" \
-  ++reward_model.reward_kwargs.math_weight_step_reachability_reward="${MATH_WEIGHT_STEP_REACHABILITY_REWARD}" \
-  ++reward_model.reward_kwargs.math_enable_progress_reward="${MATH_ENABLE_PROGRESS_REWARD}" \
-  ++reward_model.reward_kwargs.math_weight_progress_reward="${MATH_WEIGHT_PROGRESS_REWARD}" \
-  ++reward_model.reward_kwargs.math_enable_process_reward_model_score="${MATH_ENABLE_PROCESS_REWARD_MODEL_SCORE}" \
-  ++reward_model.reward_kwargs.math_weight_process_reward_model_score="${MATH_WEIGHT_PROCESS_REWARD_MODEL_SCORE}" \
-  ++reward_model.reward_kwargs.math_enable_reasoning_distance_reward="${MATH_ENABLE_REASONING_DISTANCE_REWARD}" \
-  ++reward_model.reward_kwargs.math_weight_reasoning_distance_reward="${MATH_WEIGHT_REASONING_DISTANCE_REWARD}" \
+  ++reward_model.reward_kwargs.math_enable_answer_efficiency_reward="${MATH_ENABLE_ANSWER_EFFICIENCY_REWARD}" \
+  ++reward_model.reward_kwargs.math_weight_answer_efficiency_reward="${MATH_WEIGHT_ANSWER_EFFICIENCY_REWARD}" \
+  ++reward_model.reward_kwargs.math_enable_consistency_reward="${MATH_ENABLE_CONSISTENCY_REWARD}" \
+  ++reward_model.reward_kwargs.math_weight_consistency_reward="${MATH_WEIGHT_CONSISTENCY_REWARD}" \
+  ++reward_model.reward_kwargs.math_efficiency_min_tokens="${MATH_EFFICIENCY_MIN_TOKENS}" \
+  ++reward_model.reward_kwargs.math_efficiency_max_tokens="${MATH_EFFICIENCY_MAX_TOKENS}" \
+  ++reward_model.reward_kwargs.math_efficiency_post_answer_max_tokens="${MATH_EFFICIENCY_POST_ANSWER_MAX_TOKENS}" \
   algorithm.use_kl_in_reward="${USE_KL_IN_REWARD}" \
   algorithm.kl_penalty="${KL_PENALTY}" \
   algorithm.kl_ctrl.type="${KL_CTRL_TYPE}" \
