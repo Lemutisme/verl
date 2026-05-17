@@ -102,9 +102,14 @@ def _score_math(data_source, solution_str, ground_truth, extra_info=None, **kwar
     combiner = _get_combiner(kwargs)
     main_reward = 1.0 if base_acc else 0.0
     info = combiner.process_batch([main_reward], [subrewards])[0]
+    # Flush pending duals so that the dual update happens once per training step,
+    # not per-sample. This prevents the internal step counter from inflating.
+    combiner.flush_pending_duals()
 
     if to_bool(kwargs.get("math_signed_reward", True), True):
         if combine_mode == "pd":
+            # PD rewards are already in [-1, 1] from process_batch clipping;
+            # remap to signed scale: positive for correct, negative for wrong
             info["score"] = clip(info["score"], -1.0, 1.0)
         else:
             info["score"] = 2.0 * clip(info["score"], 0.0, 1.0) - 1.0

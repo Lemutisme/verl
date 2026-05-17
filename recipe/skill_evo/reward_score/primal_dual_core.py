@@ -40,7 +40,8 @@ def _adaptive_tau(perf_ref: float, tau_min: float, tau_max: float, perf_lo: floa
 def _adaptive_eta(base_eta: float, perf_ref: float, gate_center: float, gate_scale: float, step: int) -> float:
     if base_eta <= 0: return 0.0
     gate = _sigmoid(gate_scale * (perf_ref - gate_center))
-    decay = 1.0 / math.sqrt(float(step) + 1.0)
+    # Use gentler log-based decay instead of 1/sqrt to avoid killing updates too fast
+    decay = 1.0 / (1.0 + 0.1 * math.log(float(step) + 1.0))
     return base_eta * gate * decay
 
 class GenericPrimalDualState:
@@ -49,6 +50,8 @@ class GenericPrimalDualState:
         self.ema_perf: float = 0.0
         self.ema_subrewards: Dict[str, float] = {}
         self.step: int = 0
+        # Track the last global_step we updated on to prevent duplicate updates
+        self._last_global_step: int = -1
         
     def asdict(self):
         d = {"ema_perf": self.ema_perf, "step": self.step}
@@ -63,7 +66,7 @@ class SubrewardConfig:
     tau_min: float = 0.20
     tau_max: float = 0.85
     eta0: float = 0.05
-    lambda_max: float = 4.0
+    lambda_max: float = 0.5  # Reduced from 4.0 to prevent sub-rewards from overwhelming main reward
     static_multiplier: float = 1.0
 
 # Default warmup steps: use higher EMA alpha for faster convergence during initial training
@@ -102,13 +105,19 @@ class GenericRewardCombiner:
         self.warmup_alpha = _clip(_to_float(kwargs.get("warmup_alpha", _DEFAULT_WARMUP_ALPHA), _DEFAULT_WARMUP_ALPHA), 0.0, 1.0)
         self.update_dual = _to_bool(kwargs.get("update_dual", True), True)
         self.dual_update_on_gated = _to_bool(kwargs.get("dual_update_on_gated", False), False)
-        self.normalize_by_dual_mass = _to_bool(kwargs.get("normalize_by_dual_mass", False), False)
+        # Enable normalize_by_dual_mass by default in PD mode to prevent clipping saturation
+        pd_default_normalize = (self.combine_mode == "pd")
+        self.normalize_by_dual_mass = _to_bool(kwargs.get("normalize_by_dual_mass", pd_default_normalize), pd_default_normalize)
         
         self.kwargs = kwargs
         
         # Instance-level state and lock (not shared across instances)
         self._lock = Lock()
         self._state = GenericPrimalDualState()
+        
+        # Accumulator for batching dual updates across per-sample process_batch calls
+        self._pending_perfs: List[float] = []
+        self._pending_subrewards: List[Dict[str, float]] = []
         
         self.sub_cfgs: Dict[str, SubrewardConfig] = {}
         for name in self.subreward_names:
@@ -125,7 +134,7 @@ class GenericRewardCombiner:
             tau_min=_clip01(_to_float(self.kwargs.get(f"tau_{name}_min", 0.20), 0.20)),
             tau_max=_clip01(_to_float(self.kwargs.get(f"tau_{name}_max", 0.85), 0.85)),
             eta0=max(0.0, _to_float(self.kwargs.get(f"eta_{name}", 0.05), 0.05)),
-            lambda_max=max(0.0, _to_float(self.kwargs.get(f"lambda_{name}_max", 4.0), 4.0)),
+            lambda_max=max(0.0, _to_float(self.kwargs.get(f"lambda_{name}_max", 0.5), 0.5)),
             static_multiplier=_to_float(self.kwargs.get(f"weight_{name}", 1.0), 1.0) # default weight 1.0
         )
         # Ensure tau_max >= tau_min
@@ -207,9 +216,28 @@ class GenericRewardCombiner:
                 
                 self._state.lambdas[name] = _clip(curr_lambda + eta_name * (tau_name - curr_ema_sub), 0.0, cfg.lambda_max)
 
-    def process_batch(self, main_rewards: List[float], subrewards_list: List[Dict[str, float]]) -> List[Dict[str, float]]:
+    def flush_pending_duals(self):
+        """
+        Flush accumulated pending samples and perform a single dual update.
+        Call this once per training step (after all per-sample process_batch calls).
+        """
+        with self._lock:
+            perfs = list(self._pending_perfs)
+            subs = list(self._pending_subrewards)
+            self._pending_perfs.clear()
+            self._pending_subrewards.clear()
+        
+        if perfs:
+            self._update_duals(perfs, subs)
+
+    def process_batch(self, main_rewards: List[float], subrewards_list: List[Dict[str, float]], 
+                      global_step: int = -1) -> List[Dict[str, float]]:
         """
         Processes a batch of responses and calculates the combined reward + infos.
+        
+        If global_step >= 0, dual updates are deferred: samples are accumulated and
+        the dual update happens only once per unique global_step. This prevents the
+        internal step counter from inflating when process_batch is called per-sample.
         """
         if len(main_rewards) == 0:
             return []
@@ -225,7 +253,24 @@ class GenericRewardCombiner:
         
         if self.combine_mode == "pd":
             lambdas, taus = self._get_pricing_context(fallback_perf=batch_perf)
-            self._update_duals(main_rewards, subrewards_list)
+            
+            if global_step >= 0:
+                # Deferred mode: accumulate samples and only update duals once per global_step
+                with self._lock:
+                    should_flush = (self._state._last_global_step != global_step and 
+                                    self._state._last_global_step >= 0 and
+                                    len(self._pending_perfs) > 0)
+                
+                if should_flush:
+                    self.flush_pending_duals()
+                
+                with self._lock:
+                    self._pending_perfs.extend(main_rewards)
+                    self._pending_subrewards.extend(subrewards_list)
+                    self._state._last_global_step = global_step
+            else:
+                # Legacy mode: update duals immediately (for backward compatibility)
+                self._update_duals(main_rewards, subrewards_list)
             
             with self._lock:
                 state_dict = self._state.asdict()
@@ -236,14 +281,20 @@ class GenericRewardCombiner:
                     reward = 0.0
                 else:
                     reward = s_perf
+                    pd_bonus = 0.0
                     for name in self.subreward_names:
                         s_sub = subrewards_list[idx].get(name, 0.0)
-                        reward += lambdas[name] * (s_sub - taus[name])
+                        pd_bonus += lambdas[name] * (s_sub - taus[name])
                     
                     if self.normalize_by_dual_mass:
                         denom = 1.0 + sum(lambdas.values())
                         if denom > 0:
-                            reward = reward / denom
+                            # Normalize the entire reward (main + bonus) by dual mass
+                            reward = (reward + pd_bonus) / denom
+                        else:
+                            reward = reward + pd_bonus
+                    else:
+                        reward = reward + pd_bonus
                             
                 # PD rewards can be negative (penalty signal); clip to [-1, 1]
                 reward = _clip(reward, -1.0, 1.0)

@@ -392,7 +392,7 @@ GEN_TP=${GEN_TP:-1}
 # Larger models (7-8B): offload enabled, conservative batches
 case "${MODEL_PRESET}" in
   qwen3-4b|qwen-4b|4b|deepseek-r1-distill-qwen-1.5b|deepseek-r1-1.5b|r1-1.5b)
-    VLLM_GPU_UTIL=${VLLM_GPU_UTIL:-0.35}
+    VLLM_GPU_UTIL=${VLLM_GPU_UTIL:-0.3}
     VLLM_MAX_NUM_SEQS=${VLLM_MAX_NUM_SEQS:-128}
     TRAIN_PROMPT_BSZ=${TRAIN_PROMPT_BSZ:-4}
     GEN_PROMPT_BSZ=${GEN_PROMPT_BSZ:-16}

@@ -5,7 +5,7 @@
 
 # Default values
 GPUS=""
-STEPS="1000"
+STEPS="400"
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
@@ -41,9 +41,9 @@ else
 fi
 
 # 2. Experiment Matrix
-REWARDS=("new" "pd" "ori")
+REWARDS=("pd" "new" "ori")
 # Datasets for run_grpo_math.sh
-MATH_DATASETS=("general365" "deepscalar")
+MATH_DATASETS=("gsm8k" "deepscalar" "general365")
 
 # Paths to scripts
 # run_grpo_math.sh is in the same directory
@@ -114,12 +114,58 @@ while true; do
     echo "  ROUND ${ROUND} — $(date '+%Y-%m-%d %H:%M:%S')"
     echo "================================================================"
 
+    for DATASET in "${MATH_DATASETS[@]}"; do
+        echo ""
+        echo "################################################################"
+        echo "# [Round ${ROUND}] BENCHMARK: ${DATASET}"
+        echo "################################################################"
+        echo ""
+
+        for REWARD in "${REWARDS[@]}"; do
+            echo "  --------------------------------------------------------------"
+            echo "  # REWARD PRESET: ${REWARD}"
+            echo "  --------------------------------------------------------------"
+
+            # Ensure environment is clean before starting any task
+            echo "[INFO] Cleaning up ray and potential zombie vllm processes..."
+            ray stop --force >/dev/null 2>&1 || true
+            pkill -f vllm >/dev/null 2>&1 || true
+            sleep 3
+
+            # Align with DeepCoder high-performance config
+            export VLLM_GPU_UTIL=0.3
+            export VLLM_MAX_NUM_SEQS=128
+            export TRAIN_PROMPT_BSZ=4
+            export GEN_PROMPT_BSZ=16
+            export N_RESP_PER_PROMPT=4
+            export TRAIN_PROMPT_MINI_BSZ=4
+            export OFFLOAD=false
+
+            TASK_OUT="${EXP_LOG_DIR}/R${ROUND}_math_${DATASET}_${REWARD}.stdout"
+            TASK_ERR="${EXP_LOG_DIR}/R${ROUND}_math_${DATASET}_${REWARD}.stderr"
+            echo "[RUN] Math/General: ${DATASET} | Reward: ${REWARD}"
+            echo "      ➜  Stdout: ${TASK_OUT}"
+            echo "      ➜  Stderr: ${TASK_ERR}"
+            bash "${MATH_SCRIPT}" -reward "${REWARD}" -dataset "${DATASET}" -gpus "${GPUS}" -steps "${STEPS}" > >(tee "${TASK_OUT}") 2> >(tee "${TASK_ERR}" >&2)
+            log_failure $? "Math:${DATASET}:${REWARD}"
+            
+            echo "[INFO] Cleaning up after Task..."
+            ray stop --force >/dev/null 2>&1 || true
+            sleep 2
+        done
+    done
+
+    # --- Task 4: Code (DeepCoder) ---
+    echo ""
+    echo "################################################################"
+    echo "# [Round ${ROUND}] BENCHMARK: deepcoder"
+    echo "################################################################"
+    echo ""
+
     for REWARD in "${REWARDS[@]}"; do
-        echo ""
-        echo "################################################################"
-        echo "# [Round ${ROUND}] REWARD PRESET: ${REWARD}"
-        echo "################################################################"
-        echo ""
+        echo "  --------------------------------------------------------------"
+        echo "  # REWARD PRESET: ${REWARD}"
+        echo "  --------------------------------------------------------------"
 
         # Ensure environment is clean before starting any task
         echo "[INFO] Cleaning up ray and potential zombie vllm processes..."
@@ -127,7 +173,6 @@ while true; do
         pkill -f vllm >/dev/null 2>&1 || true
         sleep 3
 
-        # --- Task 1: Math (DeepScalar) ---
         # Align with DeepCoder high-performance config
         export VLLM_GPU_UTIL=0.3
         export VLLM_MAX_NUM_SEQS=128
@@ -137,48 +182,18 @@ while true; do
         export TRAIN_PROMPT_MINI_BSZ=4
         export OFFLOAD=false
 
-        TASK1_OUT="${EXP_LOG_DIR}/R${ROUND}_math_deepscalar_${REWARD}.stdout"
-        TASK1_ERR="${EXP_LOG_DIR}/R${ROUND}_math_deepscalar_${REWARD}.stderr"
-        echo "[RUN] Math: DeepScalar | Reward: ${REWARD}"
-        echo "      ➜  Stdout: ${TASK1_OUT}"
-        echo "      ➜  Stderr: ${TASK1_ERR}"
-        bash "${MATH_SCRIPT}" -reward "${REWARD}" -dataset deepscalar -gpus "${GPUS}" -steps "${STEPS}" > >(tee "${TASK1_OUT}") 2> >(tee "${TASK1_ERR}" >&2)
-        log_failure $? "Math:DeepScalar:${REWARD}"
-        [ $? -ne 0 ] 2>/dev/null; ROUND_FAILED_TASKS+=() # tracked via log_failure
-        echo "[INFO] Cleaning up after Task 1..."
-        ray stop --force >/dev/null 2>&1 || true
-        sleep 2
-
-        # --- Task 2: General Reasoning (General365) ---
-        # Keep same high-performance config for general tasks
-        TASK2_OUT="${EXP_LOG_DIR}/R${ROUND}_math_general365_${REWARD}.stdout"
-        TASK2_ERR="${EXP_LOG_DIR}/R${ROUND}_math_general365_${REWARD}.stderr"
-        echo "[RUN] General: General365 | Reward: ${REWARD}"
-        echo "      ➜  Stdout: ${TASK2_OUT}"
-        echo "      ➜  Stderr: ${TASK2_ERR}"
-        bash "${MATH_SCRIPT}" -reward "${REWARD}" -dataset general365 -gpus "${GPUS}" -steps "${STEPS}" > >(tee "${TASK2_OUT}") 2> >(tee "${TASK2_ERR}" >&2)
-        log_failure $? "General:General365:${REWARD}"
-        echo "[INFO] Cleaning up after Task 2..."
-        ray stop --force >/dev/null 2>&1 || true
-        sleep 2
-
-        # --- Task 3: Code (DeepCoder) ---
-        TASK3_OUT="${EXP_LOG_DIR}/R${ROUND}_code_deepcoder_${REWARD}.stdout"
-        TASK3_ERR="${EXP_LOG_DIR}/R${ROUND}_code_deepcoder_${REWARD}.stderr"
+        TASK4_OUT="${EXP_LOG_DIR}/R${ROUND}_code_deepcoder_${REWARD}.stdout"
+        TASK4_ERR="${EXP_LOG_DIR}/R${ROUND}_code_deepcoder_${REWARD}.stderr"
         echo "[RUN] Code: DeepCoder | Reward: ${REWARD}"
-        echo "      ➜  Stdout: ${TASK3_OUT}"
-        echo "      ➜  Stderr: ${TASK3_ERR}"
-        bash "${CODE_SCRIPT}" -reward "${REWARD}" -gpus "${GPUS}" > >(tee "${TASK3_OUT}") 2> >(tee "${TASK3_ERR}" >&2)
+        echo "      ➜  Stdout: ${TASK4_OUT}"
+        echo "      ➜  Stderr: ${TASK4_ERR}"
+        bash "${CODE_SCRIPT}" -reward "${REWARD}" -gpus "${GPUS}" > >(tee "${TASK4_OUT}") 2> >(tee "${TASK4_ERR}" >&2)
         log_failure $? "Code:DeepCoder:${REWARD}"
-        echo "[INFO] Cleaning up after Task 3..."
+        
+        echo "[INFO] Cleaning up after Task..."
         ray stop --force >/dev/null 2>&1 || true
         pkill -f "vllm|verl" >/dev/null 2>&1 || true
         sleep 2
-
-        echo ""
-        echo "[DONE] Completed experiments for reward: ${REWARD}"
-        echo "################################################################"
-        echo ""
     done
 
     # Round Summary

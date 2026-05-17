@@ -19,7 +19,7 @@ DEFAULT_ENABLED = {
         "block_level_process_reward": True,
     },
     "math": {
-        "final_answer_reward": True,
+        "final_answer_reward": False,  # Disabled: redundant with main accuracy reward in PD mode
         "answer_efficiency_reward": True,
         "consistency_reward": True,
     },
