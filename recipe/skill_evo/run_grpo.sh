@@ -4,10 +4,10 @@ set -euo pipefail
 usage() {
   cat <<'EOF'
 Usage:
-  bash run_grpo.sh -reward {ori|new|pd} -model {qwen3-4b|qwen3-8b|deepseek7b|custom} [options]
+  bash run_grpo.sh -reward {ori|new|pd|pdgdpo} -model {qwen3-4b|qwen3-8b|deepseek7b|custom} [options]
 
 Options:
-  -reward, --reward         Reward preset: ori, new, pd
+  -reward, --reward         Reward preset: ori, new, pd, pdgdpo
   -model, --model           Model preset: qwen3-4b, qwen3-8b, deepseek-r1-1.5b, deepseek7b, custom
   -mode, --mode             Alias of -model
   -kl, --kl                 KL mode: loss, reward, none
@@ -22,12 +22,22 @@ Coding sub-reward env knobs:
   CODING_ENABLE_<NAME>=true/false and CODING_WEIGHT_<NAME>=float
   Names: UNIT_TEST_PASS_RATE, COMPILER_RUNTIME_FEEDBACK, STATIC_ANALYSIS_REWARD,
          EXECUTED_TOKEN_CREDIT, BLOCK_LEVEL_PROCESS_REWARD
+
+PD-GDPO env knobs (only used with -reward pdgdpo):
+  PDGDPO_CORRECTNESS_GATE=float   Primary-reward gate for auxiliary residuals (default 0.0)
+  PDGDPO_DEFAULT_TAU_MIN/MAX      Adaptive target bounds for all components
+  PDGDPO_DEFAULT_ETA              Dual step size; PDGDPO_DEFAULT_LAMBDA_MAX caps lambda
+  PDGDPO_TAU_<NAME>_MIN/MAX, PDGDPO_ETA_<NAME>, PDGDPO_LAMBDA_<NAME>_MAX  Per-component overrides
+  PDGDPO_RHO_MODE=raw|dual_mass   Dual-to-weight mapping (default raw)
+  PDGDPO_DUAL_UPDATE=additive|mirror   Dual update rule (default additive)
+  PDGDPO_STATE_PATH=path          Optional JSON file to checkpoint controller state
   -h, --help                Show this help message
 
 Examples:
   bash run_grpo.sh -reward ori -model qwen3-4b
   bash run_grpo.sh -reward new -model qwen3-8b -kl none -gpus 2,3 -name ablation_a
   bash run_grpo.sh -reward pd -model deepseek7b -kl reward -kl-coef 0.001
+  bash run_grpo.sh -reward pdgdpo -model qwen3-4b -kl loss
   bash run_grpo.sh -reward pd -model custom -model-id Qwen/Qwen3-30B-A3B-Instruct-2507
 EOF
 }
@@ -148,6 +158,19 @@ case "${REWARD_KIND}" in
     REWARD_LABEL="pd"
     REWARD_DEFAULT_GPU=2
     COMBINE_MODE="pd"
+    DEEPCODER_ENABLE_THOUGHT=${DEEPCODER_ENABLE_THOUGHT:-true}
+    DEEPCODER_BETA=${DEEPCODER_BETA:-1.0}
+    DEEPCODER_GAMMA=${DEEPCODER_GAMMA:-1.0}
+    CODING_ENABLE_SUB_REWARDS=${CODING_ENABLE_SUB_REWARDS:-true}
+    ;;
+  pdgdpo|pd_gdpo|pdpo)
+    # PD-GDPO: primal-dual control at the advantage level (component-wise
+    # group normalization + dynamically adapted dual variables).
+    RUN_VARIANT="pd_gdpo"
+    REWARD_LABEL="pdgdpo"
+    REWARD_DEFAULT_GPU=3
+    COMBINE_MODE="pdgdpo"
+    ADV_ESTIMATOR="pd_gdpo"
     DEEPCODER_ENABLE_THOUGHT=${DEEPCODER_ENABLE_THOUGHT:-true}
     DEEPCODER_BETA=${DEEPCODER_BETA:-1.0}
     DEEPCODER_GAMMA=${DEEPCODER_GAMMA:-1.0}

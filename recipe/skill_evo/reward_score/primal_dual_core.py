@@ -220,6 +220,25 @@ class GenericRewardCombiner:
             # Just return main rewards
             return [{"score": float(r), "combined_reward": float(r), "acc": float(r)} for r in main_rewards]
 
+        if self.combine_mode == "pdgdpo":
+            # PD-GDPO: do NOT scalarize. Emit the primary reward as `score` and
+            # each subreward as a `pdcomp__<name>` field. Primal-dual control is
+            # applied later at the advantage level by the pd_gdpo estimator.
+            infos = []
+            for idx, s_perf in enumerate(main_rewards):
+                info = {
+                    "score": float(s_perf),
+                    "combined_reward": float(s_perf),
+                    "acc": float(s_perf),
+                    "original_reward": float(s_perf),
+                }
+                for name in self.subreward_names:
+                    s_sub = float(subrewards_list[idx].get(name, 0.0))
+                    info[f"{name}_reward"] = s_sub
+                    info[f"pdcomp__{name}"] = s_sub
+                infos.append(info)
+            return infos
+
         infos = []
         batch_perf = sum(main_rewards) / float(len(main_rewards))
         

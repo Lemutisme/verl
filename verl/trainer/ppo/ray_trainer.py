@@ -18,6 +18,7 @@ PPO Trainer with Ray-based single controller.
 This trainer supports model-agonistic model initialization with huggingface
 """
 
+import inspect
 import json
 import os
 import shutil
@@ -258,6 +259,10 @@ def compute_advantage(
             adv_kwargs["index"] = data.non_tensor_batch["uid"]
         if "reward_baselines" in data.batch:  # optional
             adv_kwargs["reward_baselines"] = data.batch["reward_baselines"]
+        # Estimators that need access to the full batch (e.g. multi-component
+        # advantage estimators) may declare a `data` parameter.
+        if "data" in inspect.signature(adv_estimator_fn).parameters:
+            adv_kwargs["data"] = data
 
         # calculate advantage estimator
         advantages, returns = adv_estimator_fn(**adv_kwargs)

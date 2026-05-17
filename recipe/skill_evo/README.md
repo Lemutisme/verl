@@ -96,3 +96,61 @@ Hyperparameters can be injected globally via Hydra overrides (`++reward_model.re
 | `eta_{X}` | `float` | `0.05` | Base step size for updating the Lagrange multiplier $\lambda_X$. |
 | `lambda_{X}_max` | `float` | `4.0` | Maximum permissible magnitude for $\lambda_X$. |
 | `normalize_by_dual_mass` | `bool` | `False` | Whether to normalize the final reward by dividing by $(1 + \sum \lambda_k)$. |
+
+---
+
+## 🧭 PD-GDPO: Primal-Dual Group-Decoupled Policy Optimization
+
+The `pd` mode above scalarizes rewards *before* GRPO normalization
+($R = S_{\text{perf}} + \sum_k \lambda_k (s_k - \tau_k)$), which collapses
+component-level reward geometry: once summed, distinct reward profiles can
+normalize to similar advantages, and $\lambda_k$ applied before group
+normalization is partially erased.
+
+**PD-GDPO** moves primal-dual control from the *scalar reward level* to the
+*component-wise advantage level*:
+
+1. group-normalize the primary reward $r^0$ within each prompt group;
+2. for each auxiliary component $k$, form correctness-gated residuals
+   $c_i^k = \mathbf{1}[r_i^0 > g]\,(s_i^k - \tau_k)$ and group-normalize them
+   *independently*;
+3. aggregate $A_i^{\text{raw}} = \hat A_i^0 + \sum_k \rho(\lambda_k)\,\hat A_i^k$;
+4. batch-whiten to get the final advantage.
+
+Dual variables are updated once per rollout batch *after* pricing, using only
+correctness-gated samples: $\lambda_k \leftarrow \Pi_{[0,\lambda_{\max}]}[\lambda_k + \eta_k(\tau_k - \widehat C_k)]$.
+
+### Architecture
+
+| File | Role |
+|------|------|
+| `pd_gdpo/controller.py` | `PrimalDualController` — centralized dual state ($\lambda_k$, $\tau_k$, EMA), updated once per batch on the driver. |
+| `pd_gdpo/advantage.py` | `compute_pd_gdpo_advantage` — registered as the `pd_gdpo` advantage estimator. |
+| `custom_reward.py` | In `combine_mode=pdgdpo`, emits the primary reward as `score` and each subreward as a `pdcomp__<name>` batch field (no scalarization). |
+
+The estimator reads component scalars from `data.non_tensor_batch` keys
+prefixed with `pdcomp__`. A one-line change in `verl/trainer/ppo/ray_trainer.py`
+passes the full `DataProto` to any estimator that declares a `data` parameter.
+
+### Usage
+
+```bash
+bash run_grpo.sh -reward pdgdpo -model qwen3-4b -kl loss
+```
+
+This sets `combine_mode=pdgdpo` and `algorithm.adv_estimator=pd_gdpo`. KL is
+kept as an actor loss (`use_kl_loss=true`, `use_kl_in_reward=false`), so the
+advantage estimator only handles reward components.
+
+Controller hyperparameters are configured via `PDGDPO_*` environment variables
+(see `run_grpo.sh -h`), e.g.:
+
+```bash
+PDGDPO_CORRECTNESS_GATE=0.0 \
+PDGDPO_DEFAULT_TAU_MIN=0.2 PDGDPO_DEFAULT_TAU_MAX=0.85 \
+PDGDPO_RHO_MODE=dual_mass PDGDPO_DUAL_UPDATE=additive \
+bash run_grpo.sh -reward pdgdpo -model qwen3-4b
+```
+
+If no `pdcomp__*` components are present in a batch, the estimator safely falls
+back to plain GRPO on the primary reward.

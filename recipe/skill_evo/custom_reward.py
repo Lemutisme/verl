@@ -15,6 +15,11 @@ from reward_score.sub_reward import collect_subrewards, weight_overrides, to_boo
 import reward_score.mbpp_action_thought_reward as mbpp_evaluator
 import reward_score.deepcoder_action_thought_reward as deepcoder_evaluator
 
+# Importing the pd_gdpo package registers the `pd_gdpo` advantage estimator with
+# verl. This file is loaded on the driver when the reward manager is built,
+# before compute_advantage runs, so the estimator is available in time.
+import pd_gdpo  # noqa: F401
+
 # Initialize the generic combiner (will parse kwargs for combine_mode="pd"|"multiplier")
 # We delay initialization until the first call to ensure we have the kwargs
 
@@ -103,7 +108,7 @@ def _score_math(data_source, solution_str, ground_truth, extra_info=None, **kwar
     main_reward = 1.0 if base_acc else 0.0
     info = combiner.process_batch([main_reward], [subrewards])[0]
 
-    if to_bool(kwargs.get("math_signed_reward", True), True):
+    if to_bool(kwargs.get("math_signed_reward", True), True) and combine_mode != "pdgdpo":
         if combine_mode == "pd":
             info["score"] = clip(info["score"], -1.0, 1.0)
         else:
@@ -123,7 +128,8 @@ def compute_score(data_source, solution_str, ground_truth, extra_info=None, **kw
         return _score_math(data_source, solution_str, ground_truth, extra_info=extra_info, **kwargs)
 
     combiner = _get_combiner(kwargs)
-        
+    combine_mode = str(kwargs.get("combine_mode", "none")).lower()
+
     if data_source in ["mbpp:train", "mbpp:test", "mbpp:validation", "mbpp"]:
         # Pass return_components=True to just get the raw components
         res = mbpp_evaluator.compute_score_mbpp(solution_str, ground_truth, return_components=True, **kwargs)
@@ -138,11 +144,11 @@ def compute_score(data_source, solution_str, ground_truth, extra_info=None, **kw
             main_rewards = [r["main_reward"] for r in res]
             subrewards_list = [r["subrewards"] for r in res]
             infos = combiner.process_batch(main_rewards, subrewards_list)
-            return [info["score"] for info in infos]
+            return infos if combine_mode == "pdgdpo" else [info["score"] for info in infos]
         else:
             infos = combiner.process_batch([res["main_reward"]], [res["subrewards"]])
             return infos[0] if infos else 0.0
-            
+
     elif data_source.startswith("deepcoder"):
         sandbox_fusion_url = kwargs.get("sandbox_fusion_url", None)
         concurrent_semaphore = kwargs.get("concurrent_semaphore", None)
@@ -164,7 +170,7 @@ def compute_score(data_source, solution_str, ground_truth, extra_info=None, **kw
             main_rewards = [r["main_reward"] for r in res]
             subrewards_list = [r["subrewards"] for r in res]
             infos = combiner.process_batch(main_rewards, subrewards_list)
-            return [info["score"] for info in infos]
+            return infos if combine_mode == "pdgdpo" else [info["score"] for info in infos]
         else:
             infos = combiner.process_batch([res["main_reward"]], [res["subrewards"]])
             return infos[0] if infos else 0.0
