@@ -37,7 +37,9 @@ $$
 \lambda_{k}^{(t+1)} = \text{Clip}\left( \lambda_{k}^{(t)} + \eta^{(t)} \cdot \left( \tau_k^{(t)} - \bar{s}_{k}^{(t)} \right), \ 0, \ \lambda_{\text{max}} \right)
 $$
 
-Where $\eta^{(t)}$ is an adaptive learning rate that decays over time and is governed by a sigmoidal gating function to prevent instability during early policy exploration.
+Where $\eta^{(t)}$ is an adaptive learning rate that decays over time according to $\eta^{(t)} = \eta^{(0)} / (1 + 0.1 \cdot \ln(t + 1))$ to prevent updates from freezing too quickly. It is also governed by a sigmoidal gating function to prevent instability during early policy exploration.
+
+*Note: Dual updates are deferred and aggregated to happen once per training step (instead of per-sample) to prevent catastrophic step inflation.*
 
 ---
 
@@ -94,5 +96,5 @@ Hyperparameters can be injected globally via Hydra overrides (`++reward_model.re
 | `tau_{X}_min` | `float` | `0.20` | Lower bound of the adaptive baseline target for subreward `X`. |
 | `tau_{X}_max` | `float` | `0.85` | Upper bound of the adaptive baseline target for subreward `X`. |
 | `eta_{X}` | `float` | `0.05` | Base step size for updating the Lagrange multiplier $\lambda_X$. |
-| `lambda_{X}_max` | `float` | `4.0` | Maximum permissible magnitude for $\lambda_X$. |
-| `normalize_by_dual_mass` | `bool` | `False` | Whether to normalize the final reward by dividing by $(1 + \sum \lambda_k)$. |
+| `lambda_{X}_max` | `float` | `0.5` | Maximum permissible magnitude for $\lambda_X$ (reduced from 4.0 to prevent sub-rewards from overwhelming the main reward). |
+| `normalize_by_dual_mass` | `bool` | `True` | Whether to normalize the final reward by dividing by $(1 + \sum \lambda_k)$ (enabled by default in PD mode to prevent clipping saturation). |

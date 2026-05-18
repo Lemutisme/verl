@@ -4,11 +4,11 @@ set -euo pipefail
 usage() {
   cat <<'EOF'
 Usage:
-  bash run_grpo_math.sh -reward {ori|new|pd} -dataset {gsm8k|deepscalar|general365|openr1} -model {qwen3-4b|qwen3-8b|deepseek7b|custom} [options]
+  bash run_grpo_math.sh -reward {ori|new|pd} -dataset {gsm8k|deepscalar|general365|openr1|master} -model {qwen3-4b|qwen3-8b|deepseek7b|custom} [options]
 
 Options:
   -reward, --reward         Reward preset: ori, new, pd (default: pd)
-  -dataset, --dataset       Dataset preset: gsm8k, deepscalar, general365, openr1 (default: gsm8k)
+  -dataset, --dataset       Dataset preset: gsm8k, deepscalar, general365, openr1, master (default: gsm8k)
   -model, --model           Model preset: qwen3-4b, qwen3-8b, deepseek-r1-1.5b, deepseek7b, custom
   -mode, --mode             Alias of -model
   -kl, --kl                 KL mode: loss, reward, none
@@ -149,6 +149,9 @@ case "${DATASET}" in
     ;;
   openr1)
     DATASET_LABEL="openr1"
+    ;;
+  master)
+    DATASET_LABEL="master"
     ;;
   *)
     echo "Unsupported dataset: ${DATASET}" >&2
@@ -462,15 +465,19 @@ case "${DATASET}" in
     ;;
   deepscalar)
     TRAIN_FILE="${RAY_DATA_HOME}/math/deepscalar_train.parquet"
-    VAL_FILE="${RAY_DATA_HOME}/math/deepscalar_val.parquet"
+    VAL_FILE="${RAY_DATA_HOME}/math/math_eval_master.parquet"
     ;;
   general365)
     TRAIN_FILE="${RAY_DATA_HOME}/general365/train.parquet"
-    VAL_FILE="${RAY_DATA_HOME}/general365/test.parquet"
+    VAL_FILE="${RAY_DATA_HOME}/math/math_eval_master.parquet"
     ;;
   openr1)
     TRAIN_FILE="${RAY_DATA_HOME}/openr1_math/train.parquet"
     VAL_FILE="${RAY_DATA_HOME}/openr1_math/test.parquet"
+    ;;
+  master)
+    TRAIN_FILE="${RAY_DATA_HOME}/openr1_math/train.parquet" # fallback train
+    VAL_FILE="${RAY_DATA_HOME}/math/math_eval_master.parquet"
     ;;
 esac
 

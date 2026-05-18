@@ -437,7 +437,7 @@ export HF_HOME
 export HF_HUB_CACHE="${HF_HOME}"
 
 TRAIN_FILE="${RAY_DATA_HOME}/math/deepcoder_full_train.parquet"
-VAL_FILE="${RAY_DATA_HOME}/math/deepcoder_full_val.parquet"
+VAL_FILE="${RAY_DATA_HOME}/coding/code_eval_master.parquet"
 
 TENSORBOARD_DIR="${CKPTS_DIR}/tensorboard"
 TRAIN_LOG_PATH="${CKPTS_DIR}/train.log"
