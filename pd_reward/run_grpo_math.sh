@@ -4,10 +4,11 @@ set -euo pipefail
 usage() {
   cat <<'EOF'
 Usage:
-  bash run_grpo.sh -reward {ori|new|pd} -model {qwen3-4b|qwen3-8b|deepseek7b|custom} [options]
+  bash run_grpo_math.sh -reward {ori|new|pd} -dataset {gsm8k|deepscalar|general365|openr1|master} -model {qwen3-4b|qwen3-8b|deepseek7b|custom} [options]
 
 Options:
-  -reward, --reward         Reward preset: ori, new, pd
+  -reward, --reward         Reward preset: ori, new, pd (default: pd)
+  -dataset, --dataset       Dataset preset: gsm8k, deepscalar, general365, openr1, master (default: gsm8k)
   -model, --model           Model preset: qwen3-4b, qwen3-8b, deepseek-r1-1.5b, deepseek7b, custom
   -mode, --mode             Alias of -model
   -kl, --kl                 KL mode: loss, reward, none
@@ -16,20 +17,15 @@ Options:
   -model-id, --model-id     Override the Hugging Face model id directly
   -name, --name             Optional run name suffix; default is timestamp + pid
   -gpus, --gpus             Override CUDA_VISIBLE_DEVICES for this run
+  --save_freq               Set checkpoint saving frequency (e.g. -1 to disable)
   -steps, --steps           Total training steps (default: 1000)
 
-Coding sub-reward env knobs:
-  CODING_ENABLE_SUB_REWARDS=true/false
-  CODING_ENABLE_<NAME>=true/false and CODING_WEIGHT_<NAME>=float
-  Names: UNIT_TEST_PASS_RATE, COMPILER_RUNTIME_FEEDBACK, STATIC_ANALYSIS_REWARD,
-         EXECUTED_TOKEN_CREDIT, BLOCK_LEVEL_PROCESS_REWARD
+Math/general sub-reward env knobs:
+  MATH_ENABLE_SUB_REWARDS=true/false
+  MATH_ENABLE_<NAME>=true/false and MATH_WEIGHT_<NAME>=float
+  Names: FINAL_ANSWER_REWARD, ANSWER_EFFICIENCY_REWARD, CONSISTENCY_REWARD
+  MATH_EFFICIENCY_MIN_TOKENS / MAX_TOKENS / POST_ANSWER_MAX_TOKENS tune brevity.
   -h, --help                Show this help message
-
-Examples:
-  bash run_grpo.sh -reward ori -model qwen3-4b
-  bash run_grpo.sh -reward new -model qwen3-8b -kl none -gpus 2,3 -name ablation_a
-  bash run_grpo.sh -reward pd -model deepseek7b -kl reward -kl-coef 0.001
-  bash run_grpo.sh -reward pd -model custom -model-id Qwen/Qwen3-30B-A3B-Instruct-2507
 EOF
 }
 
@@ -43,6 +39,7 @@ sanitize_token() {
     | sed -E 's#[^a-z0-9._-]+#-#g; s#-+#-#g; s#(^-|-$)##g'
 }
 
+DATASET=${DATASET:-"gsm8k"}
 REWARD_KIND=${REWARD_KIND:-"pd"}
 MODEL_PRESET=${MODEL_PRESET:-${MODEL_MODE:-"qwen3-4b"}}
 KL_MODE=${KL_MODE:-"loss"}
@@ -51,6 +48,7 @@ CLI_MODEL_ID=""
 CLI_CUDA_VISIBLE_DEVICES=""
 CLI_KL_COEF=""
 CLI_KL_TYPE=""
+CLI_SAVE_FREQ=""
 CLI_TOTAL_STEPS=""
 
 while [[ $# -gt 0 ]]; do
@@ -58,6 +56,11 @@ while [[ $# -gt 0 ]]; do
     -reward|--reward)
       [[ $# -ge 2 ]] || { echo "Missing value for $1" >&2; usage; exit 1; }
       REWARD_KIND="$2"
+      shift 2
+      ;;
+    -dataset|--dataset)
+      [[ $# -ge 2 ]] || { echo "Missing value for $1" >&2; usage; exit 1; }
+      DATASET="$2"
       shift 2
       ;;
     -model|--model|-mode|--mode)
@@ -95,6 +98,11 @@ while [[ $# -gt 0 ]]; do
       CLI_CUDA_VISIBLE_DEVICES="$2"
       shift 2
       ;;
+    --save_freq)
+      [[ $# -ge 2 ]] || { echo "Missing value for $1" >&2; usage; exit 1; }
+      CLI_SAVE_FREQ="$2"
+      shift 2
+      ;;
     -steps|--steps)
       [[ $# -ge 2 ]] || { echo "Missing value for $1" >&2; usage; exit 1; }
       CLI_TOTAL_STEPS="$2"
@@ -125,40 +133,49 @@ source "${CONDA_SH}"
 conda activate verl
 set -u
 
-REWARD_KIND=$(lower "${REWARD_KIND}")
+DATASET=$(lower "${DATASET}")
 MODEL_PRESET=$(lower "${MODEL_PRESET}")
 KL_MODE=$(lower "${KL_MODE}")
 
+case "${DATASET}" in
+  gsm8k)
+    DATASET_LABEL="gsm8k"
+    ;;
+  deepscalar)
+    DATASET_LABEL="deepscalar"
+    ;;
+  general365)
+    DATASET_LABEL="general365"
+    ;;
+  openr1)
+    DATASET_LABEL="openr1"
+    ;;
+  master)
+    DATASET_LABEL="master"
+    ;;
+  *)
+    echo "Unsupported dataset: ${DATASET}" >&2
+    usage
+    exit 1
+    ;;
+esac
+
+REWARD_KIND=$(lower "${REWARD_KIND}")
 case "${REWARD_KIND}" in
-  ori|original)
-    RUN_VARIANT="ori"
+  ori|original|none)
     REWARD_LABEL="ori"
-    REWARD_DEFAULT_GPU=0
     COMBINE_MODE="none"
-    DEEPCODER_ENABLE_THOUGHT=${DEEPCODER_ENABLE_THOUGHT:-false}
-    DEEPCODER_BETA=${DEEPCODER_BETA:-0.0}
-    DEEPCODER_GAMMA=${DEEPCODER_GAMMA:-0.0}
-    CODING_ENABLE_SUB_REWARDS=${CODING_ENABLE_SUB_REWARDS:-false}
+    MATH_ENABLE_SUB_REWARDS=${MATH_ENABLE_SUB_REWARDS:-false}
     ;;
   new|new_reward)
-    RUN_VARIANT="new_reward"
     REWARD_LABEL="new"
-    REWARD_DEFAULT_GPU=1
     COMBINE_MODE="multiplier"
-    DEEPCODER_ENABLE_THOUGHT=${DEEPCODER_ENABLE_THOUGHT:-true}
-    DEEPCODER_BETA=${DEEPCODER_BETA:-1.0}
-    DEEPCODER_GAMMA=${DEEPCODER_GAMMA:-1.0}
-    CODING_ENABLE_SUB_REWARDS=${CODING_ENABLE_SUB_REWARDS:-true}
+    MATH_ENABLE_SUB_REWARDS=${MATH_ENABLE_SUB_REWARDS:-true}
     ;;
   pd|primal_dual|pd_reward)
-    RUN_VARIANT="pd_reward"
     REWARD_LABEL="pd"
-    REWARD_DEFAULT_GPU=2
     COMBINE_MODE="pd"
-    DEEPCODER_ENABLE_THOUGHT=${DEEPCODER_ENABLE_THOUGHT:-true}
-    DEEPCODER_BETA=${DEEPCODER_BETA:-1.0}
-    DEEPCODER_GAMMA=${DEEPCODER_GAMMA:-1.0}
-    CODING_ENABLE_SUB_REWARDS=${CODING_ENABLE_SUB_REWARDS:-true}
+    MATH_ENABLE_SUB_REWARDS=${MATH_ENABLE_SUB_REWARDS:-true}
     ;;
   *)
     echo "Unsupported reward preset: ${REWARD_KIND}" >&2
@@ -167,17 +184,27 @@ case "${REWARD_KIND}" in
     ;;
 esac
 
-DEEPCODER_PERF_GATE=${DEEPCODER_PERF_GATE:--1.0}
-CODING_ENABLE_UNIT_TEST_PASS_RATE=${CODING_ENABLE_UNIT_TEST_PASS_RATE:-false}
-CODING_WEIGHT_UNIT_TEST_PASS_RATE=${CODING_WEIGHT_UNIT_TEST_PASS_RATE:-0.0}
-CODING_ENABLE_COMPILER_RUNTIME_FEEDBACK=${CODING_ENABLE_COMPILER_RUNTIME_FEEDBACK:-true}
-CODING_WEIGHT_COMPILER_RUNTIME_FEEDBACK=${CODING_WEIGHT_COMPILER_RUNTIME_FEEDBACK:-0.20}
-CODING_ENABLE_STATIC_ANALYSIS_REWARD=${CODING_ENABLE_STATIC_ANALYSIS_REWARD:-true}
-CODING_WEIGHT_STATIC_ANALYSIS_REWARD=${CODING_WEIGHT_STATIC_ANALYSIS_REWARD:-0.15}
-CODING_ENABLE_EXECUTED_TOKEN_CREDIT=${CODING_ENABLE_EXECUTED_TOKEN_CREDIT:-true}
-CODING_WEIGHT_EXECUTED_TOKEN_CREDIT=${CODING_WEIGHT_EXECUTED_TOKEN_CREDIT:-0.10}
-CODING_ENABLE_BLOCK_LEVEL_PROCESS_REWARD=${CODING_ENABLE_BLOCK_LEVEL_PROCESS_REWARD:-true}
-CODING_WEIGHT_BLOCK_LEVEL_PROCESS_REWARD=${CODING_WEIGHT_BLOCK_LEVEL_PROCESS_REWARD:-0.10}
+MATH_SIGNED_REWARD=${MATH_SIGNED_REWARD:-true}
+MATH_PERF_GATE=${MATH_PERF_GATE:--1.0}
+MATH_ENABLE_FINAL_ANSWER_REWARD=${MATH_ENABLE_FINAL_ANSWER_REWARD:-true}
+MATH_WEIGHT_FINAL_ANSWER_REWARD=${MATH_WEIGHT_FINAL_ANSWER_REWARD:-0.20}
+MATH_ENABLE_ANSWER_EFFICIENCY_REWARD=${MATH_ENABLE_ANSWER_EFFICIENCY_REWARD:-true}
+MATH_WEIGHT_ANSWER_EFFICIENCY_REWARD=${MATH_WEIGHT_ANSWER_EFFICIENCY_REWARD:-0.15}
+MATH_ENABLE_CONSISTENCY_REWARD=${MATH_ENABLE_CONSISTENCY_REWARD:-true}
+MATH_WEIGHT_CONSISTENCY_REWARD=${MATH_WEIGHT_CONSISTENCY_REWARD:-0.10}
+MATH_EFFICIENCY_MIN_TOKENS=${MATH_EFFICIENCY_MIN_TOKENS:-16}
+case "${DATASET}" in
+  general365)
+    MATH_EFFICIENCY_MAX_TOKENS=${MATH_EFFICIENCY_MAX_TOKENS:-320}
+    ;;
+  deepscalar)
+    MATH_EFFICIENCY_MAX_TOKENS=${MATH_EFFICIENCY_MAX_TOKENS:-512}
+    ;;
+  *)
+    MATH_EFFICIENCY_MAX_TOKENS=${MATH_EFFICIENCY_MAX_TOKENS:-384}
+    ;;
+esac
+MATH_EFFICIENCY_POST_ANSWER_MAX_TOKENS=${MATH_EFFICIENCY_POST_ANSWER_MAX_TOKENS:-24}
 
 case "${KL_MODE}" in
   none|off|false|no)
@@ -289,19 +316,18 @@ fi
 ############################################
 # 0) GPU pinning (set BEFORE Ray)
 ############################################
-DEFAULT_CUDA_VISIBLE_DEVICES=${DEFAULT_CUDA_VISIBLE_DEVICES:-${REWARD_DEFAULT_GPU}}
+DEFAULT_CUDA_VISIBLE_DEVICES=${DEFAULT_CUDA_VISIBLE_DEVICES:-"0"}
 CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-${DEFAULT_CUDA_VISIBLE_DEVICES}}
 export CUDA_VISIBLE_DEVICES
-export RUN_VARIANT
 
 TRACE=${TRACE:-1}
 if [[ "${TRACE}" == "1" ]]; then
   set -x
 fi
 
-echo "[INFO] RUN_VARIANT=${RUN_VARIANT}"
+echo "[INFO] DATASET=${DATASET}"
 echo "[INFO] REWARD_KIND=${REWARD_KIND}"
-echo "[INFO] CODING_ENABLE_SUB_REWARDS=${CODING_ENABLE_SUB_REWARDS}"
+echo "[INFO] MATH_ENABLE_SUB_REWARDS=${MATH_ENABLE_SUB_REWARDS}"
 echo "[INFO] MODEL_PRESET=${MODEL_PRESET}"
 echo "[INFO] MODEL_ID=${MODEL_ID}"
 echo "[INFO] KL_MODE=${KL_MODE}"
@@ -330,33 +356,21 @@ export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:False"
 
 RAY_ADDRESS=${RAY_ADDRESS:-""}
 
-SANDBOX_FUSION_ROOT=${SANDBOX_FUSION_ROOT:-"/shared/nas2/yujiz/rl/SandboxFusion"}
-SANDBOX_SERVICE_ENV=${SANDBOX_SERVICE_ENV:-"sandbox-service"}
-SANDBOX_RUNTIME_ENV=${SANDBOX_RUNTIME_ENV:-"sandbox-runtime"}
-SANDBOX_HOST=${SANDBOX_HOST:-"127.0.0.1"}
-SANDBOX_PORT=${SANDBOX_PORT:-""}
-SANDBOX_AUTO_START=${SANDBOX_AUTO_START:-1}
-SANDBOX_CONFIG_NAME=${SANDBOX_CONFIG_NAME:-"local"}
-SANDBOX_FUSION_URL=${SANDBOX_FUSION_URL:-""}
-SANDBOX_HEALTHCHECK_TIMEOUT_S=${SANDBOX_HEALTHCHECK_TIMEOUT_S:-12}
-SANDBOX_START_TIMEOUT_S=${SANDBOX_START_TIMEOUT_S:-90}
-SKIP_SANDBOX_HEALTHCHECK=${SKIP_SANDBOX_HEALTHCHECK:-0}
-
 ############################################
 # 1) Experiment config
 ############################################
-PROJECT_NAME=${PROJECT_NAME:-"deepcoder_grpo"}
+PROJECT_NAME=${PROJECT_NAME:-"math_grpo"}
 if [[ -n "${RUN_TAG}" ]]; then
-  DEFAULT_EXP_NAME="grpo-${MODEL_TAG}-${REWARD_LABEL}-${KL_LABEL}-${RUN_TAG}-${RUN_INSTANCE_TAG}"
+  DEFAULT_EXP_NAME="grpo-${MODEL_TAG}-${DATASET_LABEL}-${REWARD_LABEL}-${KL_LABEL}-${RUN_TAG}-${RUN_INSTANCE_TAG}"
 else
-  DEFAULT_EXP_NAME="grpo-${MODEL_TAG}-${REWARD_LABEL}-${KL_LABEL}-${RUN_INSTANCE_TAG}"
+  DEFAULT_EXP_NAME="grpo-${MODEL_TAG}-${DATASET_LABEL}-${REWARD_LABEL}-${KL_LABEL}-${RUN_INSTANCE_TAG}"
 fi
 EXP_NAME=${EXP_NAME:-"${DEFAULT_EXP_NAME}"}
 
 ADV_ESTIMATOR=${ADV_ESTIMATOR:-"grpo"}
 
+SAVE_EVERY_STEPS=${CLI_SAVE_FREQ:-${SAVE_EVERY_STEPS:--1}}
 EVAL_EVERY_STEPS=${EVAL_EVERY_STEPS:-5}
-SAVE_EVERY_STEPS=${SAVE_EVERY_STEPS:-5}
 TOTAL_EPOCHS=${TOTAL_EPOCHS:-10}
 TOTAL_STEPS=${CLI_TOTAL_STEPS:-${TOTAL_STEPS:-1000}}
 SAVE_BEST_CHECKPOINT=${SAVE_BEST_CHECKPOINT:-true}
@@ -381,7 +395,7 @@ GEN_TP=${GEN_TP:-1}
 # Larger models (7-8B): offload enabled, conservative batches
 case "${MODEL_PRESET}" in
   qwen3-4b|qwen-4b|4b|deepseek-r1-distill-qwen-1.5b|deepseek-r1-1.5b|r1-1.5b)
-    VLLM_GPU_UTIL=${VLLM_GPU_UTIL:-0.35}
+    VLLM_GPU_UTIL=${VLLM_GPU_UTIL:-0.3}
     VLLM_MAX_NUM_SEQS=${VLLM_MAX_NUM_SEQS:-128}
     TRAIN_PROMPT_BSZ=${TRAIN_PROMPT_BSZ:-4}
     GEN_PROMPT_BSZ=${GEN_PROMPT_BSZ:-16}
@@ -428,7 +442,7 @@ if [[ -d "${CKPTS_DIR}" ]] && find "${CKPTS_DIR}" -mindepth 1 -maxdepth 1 -print
 fi
 mkdir -p "${CKPTS_DIR}"
 
-RAY_TMP_ROOT=${RAY_TMP_ROOT:-"/shared/nas2/yujiz/rl/ray_tmp"}
+RAY_TMP_ROOT=${RAY_TMP_ROOT:-"/tmp/ray_yujiz"}
 RAY_TMP_TAG=${RAY_TMP_TAG:-"$(date +%m%d%H%M%S)_$$"}
 RAY_TMPDIR=${RAY_TMPDIR:-"${RAY_TMP_ROOT}"}
 mkdir -p "${RAY_TMPDIR}"
@@ -444,8 +458,28 @@ HF_HOME=${HF_HOME:-"${RAY_DATA_HOME}/hf_cache"}
 export HF_HOME
 export HF_HUB_CACHE="${HF_HOME}"
 
-TRAIN_FILE="${RAY_DATA_HOME}/math/deepcoder_full_train.parquet"
-VAL_FILE="${RAY_DATA_HOME}/coding/code_eval_master.parquet"
+case "${DATASET}" in
+  gsm8k)
+    TRAIN_FILE="${RAY_DATA_HOME}/gsm8k/train.parquet"
+    VAL_FILE="${RAY_DATA_HOME}/gsm8k/test.parquet"
+    ;;
+  deepscalar)
+    TRAIN_FILE="${RAY_DATA_HOME}/math/deepscalar_train.parquet"
+    VAL_FILE="${RAY_DATA_HOME}/math/math_eval_master.parquet"
+    ;;
+  general365)
+    TRAIN_FILE="${RAY_DATA_HOME}/general365/train.parquet"
+    VAL_FILE="${RAY_DATA_HOME}/math/math_eval_master.parquet"
+    ;;
+  openr1)
+    TRAIN_FILE="${RAY_DATA_HOME}/openr1_math/train.parquet"
+    VAL_FILE="${RAY_DATA_HOME}/openr1_math/test.parquet"
+    ;;
+  master)
+    TRAIN_FILE="${RAY_DATA_HOME}/openr1_math/train.parquet" # fallback train
+    VAL_FILE="${RAY_DATA_HOME}/math/math_eval_master.parquet"
+    ;;
+esac
 
 TENSORBOARD_DIR="${CKPTS_DIR}/tensorboard"
 TRAIN_LOG_PATH="${CKPTS_DIR}/train.log"
@@ -471,169 +505,6 @@ if [[ "${GEN_TP}" -gt "${NUM_GPUS}" ]]; then
   GEN_TP="${NUM_GPUS}"
 fi
 
-find_free_port() {
-  local base=${1:-6379}
-  local limit=${2:-120}
-  BASE="${base}" LIMIT="${limit}" python3 - <<'PY'
-import os
-import socket
-import sys
-
-base = int(os.environ["BASE"])
-limit = int(os.environ["LIMIT"])
-
-for port in range(base, base + limit + 1):
-    sock = socket.socket()
-    try:
-        sock.bind(("0.0.0.0", port))
-    except OSError:
-        sock.close()
-        continue
-    sock.close()
-    print(port)
-    sys.exit(0)
-
-print(base)
-PY
-}
-
-check_sandbox_fusion() {
-  if [[ "${SKIP_SANDBOX_HEALTHCHECK}" == "1" ]]; then
-    echo "[WARN] Skipping sandbox health check because SKIP_SANDBOX_HEALTHCHECK=1"
-    return 0
-  fi
-
-  echo "[INFO] SANDBOX_FUSION_URL=${SANDBOX_FUSION_URL}"
-  SANDBOX_FUSION_URL="${SANDBOX_FUSION_URL}" \
-  SANDBOX_HEALTHCHECK_TIMEOUT_S="${SANDBOX_HEALTHCHECK_TIMEOUT_S}" \
-  python3 - <<'PY'
-import json
-import os
-import sys
-
-import requests
-
-url = os.environ["SANDBOX_FUSION_URL"]
-timeout_s = int(os.environ["SANDBOX_HEALTHCHECK_TIMEOUT_S"])
-payload = {
-    "compile_timeout": 5,
-    "run_timeout": 5,
-    "code": "print('sandbox_healthcheck_ok')",
-    "stdin": "",
-    "memory_limit_MB": 128,
-    "language": "python",
-    "files": {},
-    "fetch_files": [],
-}
-headers = {"Content-Type": "application/json", "Accept": "application/json"}
-
-try:
-    response = requests.post(url, headers=headers, data=json.dumps(payload), timeout=timeout_s)
-except Exception as exc:
-    print(f"[ERROR] Sandbox health check request failed for {url}: {exc}", file=sys.stderr)
-    sys.exit(1)
-
-print(f"[INFO] Sandbox health check HTTP {response.status_code} for {url}")
-if response.status_code != 200:
-    body = response.text.strip().replace("\n", " ")
-    if len(body) > 400:
-        body = body[:400] + "..."
-    print(f"[ERROR] Sandbox health check failed: HTTP {response.status_code}, body={body}", file=sys.stderr)
-    sys.exit(1)
-
-try:
-    result = response.json()
-except Exception as exc:
-    body = response.text.strip().replace("\n", " ")
-    if len(body) > 400:
-        body = body[:400] + "..."
-    print(f"[ERROR] Sandbox health check returned non-JSON response: {exc}; body={body}", file=sys.stderr)
-    sys.exit(1)
-
-status = result.get("status")
-run_result = result.get("run_result") or {}
-stdout = (run_result.get("stdout") or "").strip()
-stderr = (run_result.get("stderr") or "").strip()
-
-if status != "Success":
-    print(
-        f"[ERROR] Sandbox health check failed: status={status}, stdout={stdout!r}, stderr={stderr!r}",
-        file=sys.stderr,
-    )
-    sys.exit(1)
-
-if stdout != "sandbox_healthcheck_ok":
-    print(
-        f"[ERROR] Sandbox health check returned unexpected stdout={stdout!r}, stderr={stderr!r}",
-        file=sys.stderr,
-    )
-    sys.exit(1)
-
-print("[INFO] Sandbox health check passed.")
-PY
-}
-
-ensure_sandbox_fusion() {
-  if check_sandbox_fusion; then
-    return 0
-  fi
-
-  if [[ "${SANDBOX_AUTO_START}" != "1" ]]; then
-    echo "[ERROR] Sandbox health check failed and SANDBOX_AUTO_START=${SANDBOX_AUTO_START}" >&2
-    return 1
-  fi
-
-  echo "[INFO] Attempting to start local Sandbox Fusion..." >&2
-
-  local sandbox_state_dir="${CKPTS_DIR}/sandbox_fusion"
-  mkdir -p "${sandbox_state_dir}"
-
-  export SANDBOX_PID_FILE="${sandbox_state_dir}/sandbox_fusion.pid"
-
-  SANDBOX_FUSION_URL="$(
-    SANDBOX_FUSION_ROOT="${SANDBOX_FUSION_ROOT}" \
-    SANDBOX_SERVICE_ENV="${SANDBOX_SERVICE_ENV}" \
-    SANDBOX_RUNTIME_ENV="${SANDBOX_RUNTIME_ENV}" \
-    SANDBOX_CONFIG_NAME="${SANDBOX_CONFIG_NAME}" \
-    SANDBOX_HOST="${SANDBOX_HOST}" \
-    SANDBOX_PORT="${SANDBOX_PORT}" \
-    SANDBOX_START_TIMEOUT_S="${SANDBOX_START_TIMEOUT_S}" \
-    SANDBOX_STATE_DIR="${sandbox_state_dir}" \
-    SANDBOX_LOG_PATH="${sandbox_state_dir}/sandbox_fusion.log" \
-    SANDBOX_PID_FILE="${SANDBOX_PID_FILE}" \
-    SANDBOX_URL_FILE="${sandbox_state_dir}/sandbox_fusion.url" \
-    "${SCRIPT_DIR}/start_sandbox_fusion.sh"
-  )"
-  export SANDBOX_FUSION_URL
-
-  check_sandbox_fusion
-}
-
-if [[ -z "${SANDBOX_PORT}" || "${SANDBOX_PORT}" == "auto" ]]; then
-  SANDBOX_PORT=$(find_free_port 28080 400)
-fi
-if [[ -z "${SANDBOX_FUSION_URL}" ]]; then
-  SANDBOX_FUSION_URL="http://${SANDBOX_HOST}:${SANDBOX_PORT}/run_code"
-fi
-
-export SANDBOX_PORT
-export SANDBOX_FUSION_URL
-
-ensure_sandbox_fusion
-
-cleanup_sandbox() {
-  if [[ -n "${SANDBOX_PID_FILE:-}" ]] && [[ -f "${SANDBOX_PID_FILE}" ]]; then
-    local pid=$(cat "${SANDBOX_PID_FILE}")
-    if [[ -n "${pid}" ]] && ps -p "${pid}" >/dev/null 2>&1; then
-      echo "[INFO] Cleaning up local sandbox_fusion process tree (root=${pid})..." >&2
-      # Kill child workers first (uvicorn --workers forks children), then parent
-      pkill -9 -P "${pid}" 2>/dev/null || true
-      kill -9 "${pid}" 2>/dev/null || true
-    fi
-  fi
-}
-trap cleanup_sandbox EXIT
-
 echo "[INFO] CKPTS_DIR=${CKPTS_DIR}"
 echo "[INFO] TRAIN_LOG_PATH=${TRAIN_LOG_PATH}"
 echo "[INFO] TENSORBOARD_DIR=${TENSORBOARD_DIR}"
@@ -644,8 +515,6 @@ if [[ -n "${RAY_ADDRESS}" ]]; then
 else
   echo "[INFO] RAY_ADDRESS is unset; verl will start a local Ray runtime via ray.init()."
 fi
-echo "[INFO] SANDBOX_PORT=${SANDBOX_PORT}"
-echo "[INFO] SANDBOX_FUSION_URL=${SANDBOX_FUSION_URL}"
 echo "[INFO] EVAL_EVERY_STEPS=${EVAL_EVERY_STEPS}"
 echo "[INFO] SAVE_EVERY_STEPS=${SAVE_EVERY_STEPS}"
 
@@ -707,23 +576,19 @@ CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES} python3 -m verl.trainer.main_ppo \
   reward_model.reward_manager=naive \
   ++custom_reward_function.path="${SCRIPT_DIR}/custom_reward.py" \
   ++custom_reward_function.name="compute_score" \
-  +reward_model.sandbox_fusion.url="${SANDBOX_FUSION_URL}" \
   ++reward_model.reward_kwargs.combine_mode="${COMBINE_MODE}" \
-  ++reward_model.reward_kwargs.enable_thought="${DEEPCODER_ENABLE_THOUGHT}" \
-  ++reward_model.reward_kwargs.weight_thought="${DEEPCODER_BETA}" \
-  ++reward_model.reward_kwargs.weight_action="${DEEPCODER_GAMMA}" \
-  ++reward_model.reward_kwargs.perf_gate="${DEEPCODER_PERF_GATE}" \
-  ++reward_model.reward_kwargs.coding_enable_sub_rewards="${CODING_ENABLE_SUB_REWARDS}" \
-  ++reward_model.reward_kwargs.coding_enable_unit_test_pass_rate="${CODING_ENABLE_UNIT_TEST_PASS_RATE}" \
-  ++reward_model.reward_kwargs.coding_weight_unit_test_pass_rate="${CODING_WEIGHT_UNIT_TEST_PASS_RATE}" \
-  ++reward_model.reward_kwargs.coding_enable_compiler_runtime_feedback="${CODING_ENABLE_COMPILER_RUNTIME_FEEDBACK}" \
-  ++reward_model.reward_kwargs.coding_weight_compiler_runtime_feedback="${CODING_WEIGHT_COMPILER_RUNTIME_FEEDBACK}" \
-  ++reward_model.reward_kwargs.coding_enable_static_analysis_reward="${CODING_ENABLE_STATIC_ANALYSIS_REWARD}" \
-  ++reward_model.reward_kwargs.coding_weight_static_analysis_reward="${CODING_WEIGHT_STATIC_ANALYSIS_REWARD}" \
-  ++reward_model.reward_kwargs.coding_enable_executed_token_credit="${CODING_ENABLE_EXECUTED_TOKEN_CREDIT}" \
-  ++reward_model.reward_kwargs.coding_weight_executed_token_credit="${CODING_WEIGHT_EXECUTED_TOKEN_CREDIT}" \
-  ++reward_model.reward_kwargs.coding_enable_block_level_process_reward="${CODING_ENABLE_BLOCK_LEVEL_PROCESS_REWARD}" \
-  ++reward_model.reward_kwargs.coding_weight_block_level_process_reward="${CODING_WEIGHT_BLOCK_LEVEL_PROCESS_REWARD}" \
+  ++reward_model.reward_kwargs.perf_gate="${MATH_PERF_GATE}" \
+  ++reward_model.reward_kwargs.math_enable_sub_rewards="${MATH_ENABLE_SUB_REWARDS}" \
+  ++reward_model.reward_kwargs.math_signed_reward="${MATH_SIGNED_REWARD}" \
+  ++reward_model.reward_kwargs.math_enable_final_answer_reward="${MATH_ENABLE_FINAL_ANSWER_REWARD}" \
+  ++reward_model.reward_kwargs.math_weight_final_answer_reward="${MATH_WEIGHT_FINAL_ANSWER_REWARD}" \
+  ++reward_model.reward_kwargs.math_enable_answer_efficiency_reward="${MATH_ENABLE_ANSWER_EFFICIENCY_REWARD}" \
+  ++reward_model.reward_kwargs.math_weight_answer_efficiency_reward="${MATH_WEIGHT_ANSWER_EFFICIENCY_REWARD}" \
+  ++reward_model.reward_kwargs.math_enable_consistency_reward="${MATH_ENABLE_CONSISTENCY_REWARD}" \
+  ++reward_model.reward_kwargs.math_weight_consistency_reward="${MATH_WEIGHT_CONSISTENCY_REWARD}" \
+  ++reward_model.reward_kwargs.math_efficiency_min_tokens="${MATH_EFFICIENCY_MIN_TOKENS}" \
+  ++reward_model.reward_kwargs.math_efficiency_max_tokens="${MATH_EFFICIENCY_MAX_TOKENS}" \
+  ++reward_model.reward_kwargs.math_efficiency_post_answer_max_tokens="${MATH_EFFICIENCY_POST_ANSWER_MAX_TOKENS}" \
   algorithm.use_kl_in_reward="${USE_KL_IN_REWARD}" \
   algorithm.kl_penalty="${KL_PENALTY}" \
   algorithm.kl_ctrl.type="${KL_CTRL_TYPE}" \
@@ -742,8 +607,8 @@ CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES} python3 -m verl.trainer.main_ppo \
   trainer.total_epochs="${TOTAL_EPOCHS}" \
   trainer.total_training_steps="${TOTAL_STEPS}" \
   trainer.default_local_dir="${CKPTS_DIR}" \
-  trainer.max_actor_ckpt_to_keep=1 \
-  trainer.max_critic_ckpt_to_keep=1 \
+  trainer.max_actor_ckpt_to_keep=5 \
+  trainer.max_critic_ckpt_to_keep=5 \
   trainer.resume_mode="${RESUME_MODE:-disable}" \
   ++trainer.save_best_checkpoint="${SAVE_BEST_CHECKPOINT}" \
   ++trainer.best_checkpoint_dirname="${BEST_CHECKPOINT_DIRNAME}" \
