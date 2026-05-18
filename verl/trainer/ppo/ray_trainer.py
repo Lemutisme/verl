@@ -207,8 +207,12 @@ def compute_advantage(
             adv_kwargs["index"] = data.non_tensor_batch["uid"]
         if "reward_baselines" in data.batch:  # optional
             adv_kwargs["reward_baselines"] = data.batch["reward_baselines"]
-        # GDPO: pass raw data for per-dimension reward extraction
-        if adv_estimator in (AdvantageEstimator.GDPO, "gdpo"):
+        # GDPO / PD-GDPO: pass raw data for per-dimension reward extraction.
+        # PD-GDPO uses the same plumbing as GDPO -- it reads per-component
+        # scalars from ``non_tensor_batch`` -- and additionally consults its
+        # primal-dual controller, registered via side-effect import of
+        # ``recipe.pdpo``.
+        if adv_estimator in (AdvantageEstimator.GDPO, "gdpo", "pd_gdpo"):
             adv_kwargs["non_tensor_batch"] = data.non_tensor_batch
             adv_kwargs["batch"] = data.batch
         # Add sum_pi_squared for Optimal Token Baseline

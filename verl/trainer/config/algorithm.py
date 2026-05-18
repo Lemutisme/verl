@@ -667,3 +667,8 @@ class AlgoConfig(BaseConfig):
     # gdpo_reward_weights: per-dimension weights for aggregation (default: equal weights).
     gdpo_reward_keys: Optional[list[str]] = None
     gdpo_reward_weights: Optional[list[float]] = None
+    # PD-GDPO (Primal-Dual GDPO) settings; consumed by recipe/pdpo. The
+    # advantage estimator reads ``config.pd_gdpo.component_keys`` for the
+    # list of auxiliary reward components, plus controller hyper-parameters
+    # (correctness_gate, perf_lo/hi, eta, etc.). See recipe/pdpo/README.md.
+    pd_gdpo: dict[str, Any] = field(default_factory=dict)
