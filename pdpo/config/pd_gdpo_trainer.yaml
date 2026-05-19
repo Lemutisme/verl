@@ -1,0 +1,120 @@
+# PD-GDPO trainer config -- extends ppo_trainer with primal-dual settings.
+#
+# Drop-in usage:
+#   python -m recipe.pdpo.main_pdpo \
+#     algorithm.adv_estimator=pd_gdpo \
+#     algorithm.pd_gdpo.component_keys=[math_final_answer_reward,math_answer_efficiency_reward] \
+#     reward.custom_reward_function.path=recipe/pdpo/custom_reward.py \
+#     reward.custom_reward_function.name=compute_score \
+#     ...
+#
+# Env-var overrides (PDGDPO_*) take precedence over the values here -- see
+# recipe/pdpo/controller.py:ControllerConfig._apply_env.
+
+hydra:
+  searchpath:
+    - file://verl/trainer/config
+
+defaults:
+  - ppo_trainer
+  - _self_
+
+algorithm:
+
+  # PD-GDPO is the whole point.
+  adv_estimator: pd_gdpo
+
+  # PD-GDPO normalises per-component within prompt groups; std-normalisation
+  # is part of the GDPO geometry so keep this true.
+  norm_adv_by_std_in_grpo: true
+
+  # KL stays in the actor loss, not the reward.  This avoids the failure
+  # mode where KL is added to token_level_rewards but the per-component
+  # estimator ignores them.
+  use_kl_in_reward: false
+
+  pd_gdpo:
+
+    # Ordered list of auxiliary component keys.  Each must appear in the
+    # dict returned by your ``compute_score`` (and thus in non_tensor_batch
+    # after the reward manager runs).  The primary reward is NEVER listed
+    # here -- it is read from ``token_level_scores``.
+    #
+    # Override at launch time, e.g.:
+    #   algorithm.pd_gdpo.component_keys='[math_final_answer_reward,math_answer_efficiency_reward,math_consistency_reward]'
+    component_keys: []
+
+    # Hard correctness gate on the primary reward.  Auxiliary residuals are
+    # zeroed for samples with ``primary <= correctness_gate``.  For binary
+    # correctness use 0.0; for continuous rewards pick a meaningful floor.
+    correctness_gate: 0.0
+
+    # τ-schedule range over the primary EMA. When ema_primary <= perf_lo
+    # τ stays at tau_min; >= perf_hi τ reaches tau_max.
+    perf_lo: 0.20
+
+    perf_hi: 0.90
+
+    # EMA mixing rate for primary + components, after warmup.
+    ema_alpha: 0.05
+
+    # First N batches use ``warmup_alpha`` instead of ``ema_alpha`` so the
+    # EMA reaches a stable working point quickly.
+    warmup_steps: 50
+
+    warmup_alpha: 0.30
+
+    # η scheduling: sigmoid gate on ema_primary, then optional 1/sqrt(step) decay.
+    eta_gate_center: 0.40
+
+    eta_gate_scale: 8.0
+
+    eta_decay: true
+
+    # ρ(λ) -- "raw" multiplies normalised component advantage by λ_k
+    # directly.  "dual_mass" uses λ_k / (1 + Σ λ_j) so primary advantage
+    # stays proportionally dominant when many constraints are violated.
+    # Defaults to "dual_mass" in line with upstream pd_reward's default of
+    # ``normalize_by_dual_mass=True``.  Switch to "raw" for ablations.
+    rho_mode: dual_mass
+
+    # Dual update rule.  "additive" is projected sub-gradient ascent;
+    # "mirror" is multiplicative (exp).  Default to additive per proposal.
+    dual_update: additive
+
+    # Floor for the mirror update so λ_k = 0 can re-grow.
+    mirror_floor: 1.0e-3
+
+    # Clamp per-component group advantage before λ-weighting; protects
+    # against singleton-gate spikes.  Set to 0 to disable.
+    adv_clip: 5.0
+
+    # Optional JSON checkpoint for the controller.  Auto-loaded on init
+    # and rewritten every batch.  Set to null to disable.
+    state_path: null
+
+    # Defaults applied to every registered component unless overridden in
+    # ``components.<name>``.  ``lambda_max`` defaults to 2.0 (lowered from
+    # 4.0 in sync with upstream pd_reward, which uses 0.5 for scalarized
+    # PD; PD-GDPO can tolerate a larger ceiling because the batch whiten
+    # neutralizes absolute scale).
+    component_defaults:
+      tau_min: 0.20
+      tau_max: 0.85
+      eta: 0.05
+      lambda_max: 2.0
+      lambda_init: 0.0
+      monotone_tau: false
+
+    # Per-component overrides.  Example:
+    #   components:
+    #     math_final_answer_reward:
+    #       tau_min: 0.30
+    #       tau_max: 0.90
+    #       eta: 0.08
+    #       lambda_max: 6.0
+    components: {}
+
+trainer:
+
+  project_name: verl-pdpo
