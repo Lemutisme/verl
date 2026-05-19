@@ -31,6 +31,9 @@ PPO_RAY_RUNTIME_ENV = {
         "NCCL_DEBUG": "WARN",
         "VLLM_LOGGING_LEVEL": "WARN",
         "VLLM_ALLOW_RUNTIME_LORA_UPDATING": "true",
+        # Avoid vLLM/NCCL cuMem symmetric-memory paths during colocated sleep-mode wake-up.
+        "VLLM_ALLREDUCE_USE_SYMM_MEM": "0",
+        "NCCL_CUMEM_ENABLE": "0",
         "CUDA_DEVICE_MAX_CONNECTIONS": "1",
         # TODO: disable compile cache due to cache corruption issue
         # https://github.com/vllm-project/vllm/issues/31199

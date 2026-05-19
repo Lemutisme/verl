@@ -597,6 +597,26 @@ def calc_maj_val(data: list[dict[str, Any]], vote_key: str, val_key: str) -> flo
     return maj_val
 
 
+def _coerce_numeric_validation_values(values: list[Any]) -> list[float] | None:
+    """Return float values for scalar numeric validation metrics, or None."""
+    numeric_values = []
+    for value in values:
+        if isinstance(value, torch.Tensor):
+            if value.numel() != 1:
+                return None
+            value = value.detach().cpu().item()
+        elif isinstance(value, np.ndarray):
+            if value.shape != ():
+                return None
+            value = value.item()
+
+        if isinstance(value, (bool, np.bool_, int, float, np.integer, np.floating)):
+            numeric_values.append(float(value))
+        else:
+            return None
+    return numeric_values
+
+
 def process_validation_metrics(
     data_sources: list[str], sample_uids: list[str], infos_dict: dict[str, list[Any]], seed: int = 42
 ) -> dict[str, dict[str, dict[str, float]]]:
@@ -682,9 +702,12 @@ def process_validation_metrics(
             var_dict = uid_dict.setdefault(uid, {})
 
             for var_name, var_vals in var2vals.items():
-                # skip empty or string values
-                if not var_vals or isinstance(var_vals[0], str):
+                if not var_vals:
                     continue
+                numeric_var_vals = _coerce_numeric_validation_values(var_vals)
+                if numeric_var_vals is None:
+                    continue
+                var_vals = numeric_var_vals
 
                 # compute mean and std
                 n_resps = len(var_vals)

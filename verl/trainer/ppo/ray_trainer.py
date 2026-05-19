@@ -135,6 +135,50 @@ def compute_response_mask(data: DataProto):
     return attention_mask[:, -response_length:]
 
 
+def _estimator_name(adv_estimator: AdvantageEstimator | str) -> str:
+    return adv_estimator.value if isinstance(adv_estimator, AdvantageEstimator) else str(adv_estimator)
+
+
+def _ensure_custom_adv_estimator_registered(adv_estimator: AdvantageEstimator | str) -> None:
+    """Import local estimator registration hooks that are not part of core_algos."""
+    if _estimator_name(adv_estimator) != "pdar":
+        return
+    try:
+        import pd_reward.pdar_init  # noqa: F401
+    except ImportError:
+        import pdar_init  # noqa: F401
+
+
+def _plain_config_dict(value: Any) -> dict[str, Any]:
+    if value is None:
+        return {}
+    if OmegaConf.is_config(value):
+        value = OmegaConf.to_container(value, resolve=True)
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def _reward_kwargs_from_config(config: Any) -> dict[str, Any]:
+    if config is None or not hasattr(config, "reward"):
+        return {}
+    reward_cfg = config.reward
+    reward_kwargs = _plain_config_dict(reward_cfg.get("reward_kwargs", {}))
+    custom_reward_cfg = reward_cfg.get("custom_reward_function", {})
+    reward_kwargs.update(_plain_config_dict(custom_reward_cfg.get("reward_kwargs", {})))
+    return reward_kwargs
+
+
+def _annotate_reward_extra_info(data: DataProto, **fields: Any) -> None:
+    """Attach per-sample reward context without mutating dataset-owned dicts."""
+    existing = data.non_tensor_batch.get("extra_info", None)
+    extras = []
+    for i in range(len(data)):
+        base = existing[i] if existing is not None and i < len(existing) else {}
+        extra = dict(base) if isinstance(base, dict) else {}
+        extra.update(fields)
+        extras.append(extra)
+    data.non_tensor_batch["extra_info"] = np.array(extras, dtype=object)
+
+
 def compute_advantage(
     data: DataProto,
     adv_estimator: AdvantageEstimator,
@@ -143,6 +187,7 @@ def compute_advantage(
     num_repeat: int = 1,
     norm_adv_by_std_in_grpo: bool = True,
     config: Optional[AlgoConfig] = None,
+    reward_kwargs: Optional[dict[str, Any]] = None,
 ) -> DataProto:
     """Compute advantage estimates for policy optimization.
 
@@ -198,6 +243,7 @@ def compute_advantage(
         data.batch["returns"] = returns
     else:
         # handle all other adv estimator type other than GAE and GRPO
+        _ensure_custom_adv_estimator_registered(adv_estimator)
         adv_estimator_fn = core_algos.get_adv_estimator_fn(adv_estimator)
         adv_kwargs = {
             "token_level_rewards": data.batch["token_level_rewards"],
@@ -211,6 +257,8 @@ def compute_advantage(
         # PDAR: forward auxiliary reward tensor if present
         if "aux_token_level_scores" in data.batch:
             adv_kwargs["aux_rewards_tensor"] = data.batch["aux_token_level_scores"]
+        if _estimator_name(adv_estimator) == "pdar":
+            adv_kwargs["pdar_config_dict"] = reward_kwargs or {}
         # GDPO: pass raw data for per-dimension reward extraction
         if adv_estimator in (AdvantageEstimator.GDPO, "gdpo"):
             adv_kwargs["non_tensor_batch"] = data.non_tensor_batch
@@ -602,6 +650,11 @@ class RayPPOTrainer:
                 # for colocate reward models, we need to sleep rollout model
                 # to spare GPU memory for reward model
                 self.checkpoint_manager.sleep_replicas()
+                _annotate_reward_extra_info(
+                    test_output_gen_batch_padded,
+                    global_step=self.global_steps,
+                    is_validation=True,
+                )
                 batch_reward = self._compute_reward_colocate(test_output_gen_batch_padded)
                 test_output_gen_batch_padded = test_output_gen_batch_padded.union(batch_reward)
                 # wake up rollout model
@@ -1547,6 +1600,11 @@ class RayPPOTrainer:
                     with marked_timer("reward", timing_raw, color="yellow"):
                         # compute reward model score
                         if self.use_rm and "rm_scores" not in batch.batch.keys():
+                            _annotate_reward_extra_info(
+                                batch,
+                                global_step=self.global_steps,
+                                is_validation=False,
+                            )
                             batch_reward = self._compute_reward_colocate(batch)
                             batch = batch.union(batch_reward)
 
@@ -1677,6 +1735,7 @@ class RayPPOTrainer:
                             num_repeat=self.config.actor_rollout_ref.rollout.n,
                             norm_adv_by_std_in_grpo=norm_adv_by_std_in_grpo,
                             config=self.config.algorithm,
+                            reward_kwargs=_reward_kwargs_from_config(self.config),
                         )
 
                         # PDAR: collect metrics from the advantage estimator

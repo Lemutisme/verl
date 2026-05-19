@@ -2,9 +2,9 @@
 PDAR Registration Entry Point.
 
 Import this module to register the ``"pdar"`` advantage estimator with
-verl's ``core_algos`` registry.  The import is triggered from
-``custom_reward.py`` when ``combine_mode == "pdar"``, ensuring the estimator
-is available before the training loop calls ``compute_advantage()``.
+verl's ``core_algos`` registry.  The trainer driver imports this module when
+``algorithm.adv_estimator == "pdar"``, ensuring the estimator is available
+before the training loop calls ``compute_advantage()``.
 """
 
 import os

@@ -542,6 +542,26 @@ class TestProcessValidationMetrics(unittest.TestCase):
         # For bootstrap with n=2, the majority vote could be either A or B
         # depending on the random sampling, so we don't check the exact value
 
+    def test_process_validation_metrics_skips_non_numeric_extra_info(self):
+        """Test process_validation_metrics skips nested reward extra info."""
+        data_sources = ["source1", "source1"]
+        sample_inputs = ["prompt1", "prompt1"]
+        infos_dict = {
+            "score": [1.0, 0.0],
+            "acc": [True, False],
+            "pred": ["A", "B"],
+            "aux_rewards": [{"format": 0.5}, {"format": 0.7}],
+        }
+
+        result = process_validation_metrics(data_sources, sample_inputs, infos_dict, seed=42)
+
+        self.assertIn("score", result["source1"])
+        self.assertIn("acc", result["source1"])
+        self.assertNotIn("pred", result["source1"])
+        self.assertNotIn("aux_rewards", result["source1"])
+        self.assertAlmostEqual(result["source1"]["score"]["mean@2"], 0.5)
+        self.assertAlmostEqual(result["source1"]["acc"]["mean@2"], 0.5)
+
 
 if __name__ == "__main__":
     unittest.main()

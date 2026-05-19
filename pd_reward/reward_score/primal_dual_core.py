@@ -230,8 +230,13 @@ class GenericRewardCombiner:
         if perfs:
             self._update_duals(perfs, subs)
 
-    def process_batch(self, main_rewards: List[float], subrewards_list: List[Dict[str, float]], 
-                      global_step: int = -1) -> List[Dict[str, float]]:
+    def process_batch(
+        self,
+        main_rewards: List[float],
+        subrewards_list: List[Dict[str, float]],
+        global_step: int = -1,
+        update_dual: bool | None = None,
+    ) -> List[Dict[str, float]]:
         """
         Processes a batch of responses and calculates the combined reward + infos.
         
@@ -244,6 +249,8 @@ class GenericRewardCombiner:
             
         self._ensure_dynamic_registration(subrewards_list)
 
+        should_update_dual = self.update_dual if update_dual is None else update_dual
+
         if self.combine_mode == "none":
             # Just return main rewards
             return [{"score": float(r), "combined_reward": float(r), "acc": float(r)} for r in main_rewards]
@@ -252,9 +259,7 @@ class GenericRewardCombiner:
         batch_perf = sum(main_rewards) / float(len(main_rewards))
         
         if self.combine_mode == "pd":
-            lambdas, taus = self._get_pricing_context(fallback_perf=batch_perf)
-            
-            if global_step >= 0:
+            if should_update_dual and global_step >= 0:
                 # Deferred mode: accumulate samples and only update duals once per global_step
                 with self._lock:
                     should_flush = (self._state._last_global_step != global_step and 
@@ -268,7 +273,10 @@ class GenericRewardCombiner:
                     self._pending_perfs.extend(main_rewards)
                     self._pending_subrewards.extend(subrewards_list)
                     self._state._last_global_step = global_step
-            else:
+
+            lambdas, taus = self._get_pricing_context(fallback_perf=batch_perf)
+
+            if should_update_dual and global_step < 0:
                 # Legacy mode: update duals immediately (for backward compatibility)
                 self._update_duals(main_rewards, subrewards_list)
             

@@ -6,6 +6,7 @@
 # Default values
 GPUS=""
 STEPS="400"
+DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
@@ -46,10 +47,8 @@ REWARDS=("pdar" "pd" "new" "ori")
 MATH_DATASETS=("gsm8k" "deepscalar" "general365")
 
 # Paths to scripts
-# run_grpo_math.sh is in the same directory
-MATH_SCRIPT="./run_grpo_math.sh"
-# run_grpo.sh for Code is also in the same directory
-CODE_SCRIPT="./run_grpo.sh"
+MATH_SCRIPT="${DIR}/run_grpo_math.sh"
+CODE_SCRIPT="${DIR}/run_grpo.sh"
 
 # 2.1) Helper: Log failure and continue (replaces occupy_card_on_failure)
 FAILED_TASKS=()
@@ -96,9 +95,13 @@ except Exception as e:
 # Thus we must comment it out or set it to false:
 # export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"
 export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:False"
+# Avoid vLLM/NCCL cuMem symmetric-memory paths that can OOM during sleep-mode wake-up.
+export VLLM_ALLREDUCE_USE_SYMM_MEM="${VLLM_ALLREDUCE_USE_SYMM_MEM:-0}"
+export NCCL_CUMEM_ENABLE="${NCCL_CUMEM_ENABLE:-0}"
+echo "[INFO] VLLM_ALLREDUCE_USE_SYMM_MEM=${VLLM_ALLREDUCE_USE_SYMM_MEM}"
+echo "[INFO] NCCL_CUMEM_ENABLE=${NCCL_CUMEM_ENABLE}"
 
 # 2.4) Setup Global Logging Directory
-DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 EXP_LOG_DIR="${DIR}/logs_multi_exp/$(date +%Y%m%d_%H%M%S)"
 mkdir -p "${EXP_LOG_DIR}"
 echo "[INFO] All stdout and stderr logs will be saved to: ${EXP_LOG_DIR}"

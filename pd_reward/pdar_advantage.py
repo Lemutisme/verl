@@ -19,6 +19,7 @@ The estimator degrades to vanilla GRPO when both dual variables are zero.
 from __future__ import annotations
 
 from collections import defaultdict
+from dataclasses import asdict, is_dataclass
 from typing import Any, Optional
 
 import numpy as np
@@ -53,6 +54,7 @@ def compute_pdar_advantage(
     config: Optional[AlgoConfig] = None,
     # PDAR-specific: aux reward tensor (same shape as token_level_rewards)
     aux_rewards_tensor: Optional[torch.Tensor] = None,
+    pdar_config_dict: Optional[dict[str, Any]] = None,
     **kwargs: Any,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Compute PDAR-regulated group-relative advantages.
@@ -76,13 +78,21 @@ def compute_pdar_advantage(
     main_scores = token_level_rewards.sum(dim=-1)  # (bs,)
 
     # ----- 2. Get PDAR config and state -----
-    config_dict = {}
+    config_dict: dict[str, Any] = {}
     if config is not None:
-        # Try to extract pdar_* keys from config (OmegaConf or dict)
+        # Try to extract pdar_* keys from config (OmegaConf, dataclass, or dict)
         try:
-            config_dict = dict(config)
+            from omegaconf import OmegaConf
+
+            if OmegaConf.is_config(config):
+                config_dict = dict(OmegaConf.to_container(config, resolve=True) or {})
+            elif is_dataclass(config):
+                config_dict = asdict(config)
+            else:
+                config_dict = dict(config)
         except Exception:
             config_dict = {}
+    config_dict.update(pdar_config_dict or {})
     state, pdar_cfg = get_pdar_state(config_dict)
 
     # ----- 3. Normalise main scores (GRPO-style, group-relative) -----

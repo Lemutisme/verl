@@ -70,6 +70,8 @@ def migrate_legacy_reward_impl(config):
     if config.reward_model.get("reward_kwargs") is not None:
         with open_dict(config.reward):
             config.reward["reward_kwargs"] = config.reward_model["reward_kwargs"]
+    if config.reward_model.get("sandbox_fusion") is not None:
+        config.reward.sandbox_fusion = config.reward_model["sandbox_fusion"]
     # config.reward_model.rollout -> config.reward.reward_model.rollout
     legacy_rollout = config.reward_model.rollout
     for key in legacy_rollout.keys():

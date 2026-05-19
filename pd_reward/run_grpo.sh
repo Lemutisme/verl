@@ -4,10 +4,10 @@ set -euo pipefail
 usage() {
   cat <<'EOF'
 Usage:
-  bash run_grpo.sh -reward {ori|new|pd} -model {qwen3-4b|qwen3-8b|deepseek7b|custom} [options]
+  bash run_grpo.sh -reward {ori|new|pd|pdar} -model {qwen3-4b|qwen3-8b|deepseek7b|custom} [options]
 
 Options:
-  -reward, --reward         Reward preset: ori, new, pd
+  -reward, --reward         Reward preset: ori, new, pd, pdar
   -model, --model           Model preset: qwen3-4b, qwen3-8b, deepseek-r1-1.5b, deepseek7b, custom
   -mode, --mode             Alias of -model
   -kl, --kl                 KL mode: loss, reward, none
@@ -155,6 +155,17 @@ case "${REWARD_KIND}" in
     REWARD_LABEL="pd"
     REWARD_DEFAULT_GPU=2
     COMBINE_MODE="pd"
+    DEEPCODER_ENABLE_THOUGHT=${DEEPCODER_ENABLE_THOUGHT:-true}
+    DEEPCODER_BETA=${DEEPCODER_BETA:-1.0}
+    DEEPCODER_GAMMA=${DEEPCODER_GAMMA:-1.0}
+    CODING_ENABLE_SUB_REWARDS=${CODING_ENABLE_SUB_REWARDS:-true}
+    ;;
+  pdar|pdar_reward)
+    RUN_VARIANT="pdar_reward"
+    REWARD_LABEL="pdar"
+    REWARD_DEFAULT_GPU=2
+    COMBINE_MODE="pdar"
+    ADV_ESTIMATOR="pdar"
     DEEPCODER_ENABLE_THOUGHT=${DEEPCODER_ENABLE_THOUGHT:-true}
     DEEPCODER_BETA=${DEEPCODER_BETA:-1.0}
     DEEPCODER_GAMMA=${DEEPCODER_GAMMA:-1.0}
@@ -327,6 +338,11 @@ export HYDRA_FULL_ERROR=1
 export RAY_DEDUP_LOGS=0
 export PYTHONUNBUFFERED=1
 export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:False"
+# Avoid vLLM/NCCL cuMem symmetric-memory paths that can OOM during sleep-mode wake-up.
+export VLLM_ALLREDUCE_USE_SYMM_MEM="${VLLM_ALLREDUCE_USE_SYMM_MEM:-0}"
+export NCCL_CUMEM_ENABLE="${NCCL_CUMEM_ENABLE:-0}"
+echo "[INFO] VLLM_ALLREDUCE_USE_SYMM_MEM=${VLLM_ALLREDUCE_USE_SYMM_MEM}"
+echo "[INFO] NCCL_CUMEM_ENABLE=${NCCL_CUMEM_ENABLE}"
 
 RAY_ADDRESS=${RAY_ADDRESS:-""}
 
@@ -354,6 +370,16 @@ fi
 EXP_NAME=${EXP_NAME:-"${DEFAULT_EXP_NAME}"}
 
 ADV_ESTIMATOR=${ADV_ESTIMATOR:-"grpo"}
+
+# PDAR hyperparameters (used when ADV_ESTIMATOR=pdar)
+PDAR_ETA_C=${PDAR_ETA_C:-0.05}
+PDAR_ETA_S=${PDAR_ETA_S:-0.01}
+PDAR_LAMBDA_C_MAX=${PDAR_LAMBDA_C_MAX:-1.0}
+PDAR_LAMBDA_S_MAX=${PDAR_LAMBDA_S_MAX:-2.0}
+PDAR_TAU_C=${PDAR_TAU_C:-0.5}
+PDAR_TAU_S=${PDAR_TAU_S:-1.5}
+PDAR_SIGN_C=${PDAR_SIGN_C:-1.0}
+PDAR_SHARPNESS_EMA_ALPHA=${PDAR_SHARPNESS_EMA_ALPHA:-0.1}
 
 EVAL_EVERY_STEPS=${EVAL_EVERY_STEPS:-5}
 SAVE_EVERY_STEPS=${SAVE_EVERY_STEPS:-5}
@@ -707,7 +733,7 @@ CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES} python3 -m verl.trainer.main_ppo \
   reward_model.reward_manager=naive \
   ++custom_reward_function.path="${SCRIPT_DIR}/custom_reward.py" \
   ++custom_reward_function.name="compute_score" \
-  +reward_model.sandbox_fusion.url="${SANDBOX_FUSION_URL}" \
+  sandbox_fusion.url="${SANDBOX_FUSION_URL}" \
   ++reward_model.reward_kwargs.combine_mode="${COMBINE_MODE}" \
   ++reward_model.reward_kwargs.enable_thought="${DEEPCODER_ENABLE_THOUGHT}" \
   ++reward_model.reward_kwargs.weight_thought="${DEEPCODER_BETA}" \
@@ -724,6 +750,14 @@ CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES} python3 -m verl.trainer.main_ppo \
   ++reward_model.reward_kwargs.coding_weight_executed_token_credit="${CODING_WEIGHT_EXECUTED_TOKEN_CREDIT}" \
   ++reward_model.reward_kwargs.coding_enable_block_level_process_reward="${CODING_ENABLE_BLOCK_LEVEL_PROCESS_REWARD}" \
   ++reward_model.reward_kwargs.coding_weight_block_level_process_reward="${CODING_WEIGHT_BLOCK_LEVEL_PROCESS_REWARD}" \
+  ++reward_model.reward_kwargs.pdar_eta_c="${PDAR_ETA_C}" \
+  ++reward_model.reward_kwargs.pdar_eta_s="${PDAR_ETA_S}" \
+  ++reward_model.reward_kwargs.pdar_lambda_c_max="${PDAR_LAMBDA_C_MAX}" \
+  ++reward_model.reward_kwargs.pdar_lambda_s_max="${PDAR_LAMBDA_S_MAX}" \
+  ++reward_model.reward_kwargs.pdar_tau_c="${PDAR_TAU_C}" \
+  ++reward_model.reward_kwargs.pdar_tau_s="${PDAR_TAU_S}" \
+  ++reward_model.reward_kwargs.pdar_sign_c="${PDAR_SIGN_C}" \
+  ++reward_model.reward_kwargs.pdar_sharpness_ema_alpha="${PDAR_SHARPNESS_EMA_ALPHA}" \
   algorithm.use_kl_in_reward="${USE_KL_IN_REWARD}" \
   algorithm.kl_penalty="${KL_PENALTY}" \
   algorithm.kl_ctrl.type="${KL_CTRL_TYPE}" \

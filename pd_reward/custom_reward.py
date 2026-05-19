@@ -46,6 +46,81 @@ MATH_DATA_SOURCES = {
 
 _COMBINER_CACHE = {}
 
+
+def _to_float(v: Any, default: float = 0.0) -> float:
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return default
+
+
+def _extra_info_dict(extra_info: Any) -> dict[str, Any]:
+    return extra_info if isinstance(extra_info, dict) else {}
+
+
+def _global_step(extra_info: Any) -> int:
+    extra = _extra_info_dict(extra_info)
+    for key in ("global_step", "global_steps"):
+        if key in extra and extra[key] is not None:
+            try:
+                return int(extra[key])
+            except (TypeError, ValueError):
+                return -1
+    return -1
+
+
+def _should_update_dual(extra_info: Any) -> bool:
+    return not to_bool(_extra_info_dict(extra_info).get("is_validation", False), False)
+
+
+def _subreward_weight(name: str, kwargs: dict[str, Any]) -> float:
+    candidates = [f"weight_{name}"]
+    for category in ("math", "coding"):
+        prefix = f"{category}_"
+        if name.startswith(prefix):
+            candidates.append(f"{category}_weight_{name[len(prefix):]}")
+    for key in candidates:
+        if key in kwargs:
+            return _to_float(kwargs[key], 1.0)
+    return 1.0
+
+
+def _weighted_subreward_average(subrewards: dict[str, float], kwargs: dict[str, Any]) -> float:
+    if not subrewards:
+        return 0.0
+    weighted_sum = 0.0
+    weight_sum = 0.0
+    for name, value in subrewards.items():
+        weight = _subreward_weight(name, kwargs)
+        if weight <= 0:
+            continue
+        weighted_sum += weight * float(value)
+        weight_sum += weight
+    if weight_sum <= 0:
+        return sum(float(v) for v in subrewards.values()) / max(len(subrewards), 1)
+    return weighted_sum / weight_sum
+
+
+def _pdar_reward_info(
+    main_reward: float,
+    subrewards: dict[str, float],
+    kwargs: dict[str, Any],
+    *,
+    signed: bool = False,
+) -> dict[str, Any]:
+    main = float(main_reward)
+    if signed:
+        main = 1.0 if main > 0.0 else -1.0
+    return {
+        "score": main,
+        "main_reward": main,
+        "aux_reward_combined": _weighted_subreward_average(subrewards, kwargs),
+        "aux_rewards": subrewards,
+        "acc": bool(main_reward > 0.0),
+        "original_reward": float(main_reward),
+    }
+
+
 def _get_combiner(kwargs: dict[str, Any]) -> GenericRewardCombiner:
 
     combine_mode = str(kwargs.get("combine_mode", "none")).lower()
@@ -114,27 +189,24 @@ def _score_math(data_source, solution_str, ground_truth, extra_info=None, **kwar
 
     # --- PDAR mode: return separate channels, skip reward-level combination ---
     if combine_mode == "pdar":
-        main_reward = 1.0 if base_acc else 0.0
-        if to_bool(kwargs.get("math_signed_reward", True), True):
-            main_reward = 1.0 if base_acc else -1.0
-        # Aggregate subrewards into a single aux channel
-        aux_combined = sum(subrewards.values()) / max(len(subrewards), 1)
-        return {
-            "score": main_reward,           # used as token_level_scores (main only)
-            "main_reward": main_reward,      # flows to reward_extra_info
-            "aux_reward_combined": aux_combined,  # flows to reward_extra_info
-            "aux_rewards": subrewards,        # individual aux signals for logging
-            "acc": bool(base_acc),
-            "base_math_score": float(base_score),
-            "original_reward": float(base_score),
-        }
+        info = _pdar_reward_info(
+            1.0 if base_acc else 0.0,
+            subrewards,
+            kwargs,
+            signed=to_bool(kwargs.get("math_signed_reward", True), True),
+        )
+        info["base_math_score"] = float(base_score)
+        info["original_reward"] = float(base_score)
+        return info
 
     combiner = _get_combiner(kwargs)
     main_reward = 1.0 if base_acc else 0.0
-    info = combiner.process_batch([main_reward], [subrewards])[0]
-    # Flush pending duals so that the dual update happens once per training step,
-    # not per-sample. This prevents the internal step counter from inflating.
-    combiner.flush_pending_duals()
+    info = combiner.process_batch(
+        [main_reward],
+        [subrewards],
+        global_step=_global_step(extra_info),
+        update_dual=_should_update_dual(extra_info),
+    )[0]
 
     if to_bool(kwargs.get("math_signed_reward", True), True):
         if combine_mode == "pd":
@@ -157,6 +229,7 @@ def compute_score(data_source, solution_str, ground_truth, extra_info=None, **kw
     if ds_str in MATH_DATA_SOURCES or ds_str.startswith("aime") or ds_str.startswith("deepscalar") or "math" in ds_str:
         return _score_math(data_source, solution_str, ground_truth, extra_info=extra_info, **kwargs)
 
+    combine_mode = str(kwargs.get("combine_mode", "none")).lower()
     combiner = _get_combiner(kwargs)
         
     if data_source in ["mbpp:train", "mbpp:test", "mbpp:validation", "mbpp"]:
@@ -169,13 +242,31 @@ def compute_score(data_source, solution_str, ground_truth, extra_info=None, **kw
             main_reward, subrewards = res
             res = {"main_reward": main_reward, "subrewards": subrewards}
 
+        if combine_mode == "pdar":
+            if isinstance(res, list):
+                return [
+                    _pdar_reward_info(r["main_reward"], r["subrewards"], kwargs, signed=False)
+                    for r in res
+                ]
+            return _pdar_reward_info(res["main_reward"], res["subrewards"], kwargs, signed=False)
+
         if isinstance(res, list):
             main_rewards = [r["main_reward"] for r in res]
             subrewards_list = [r["subrewards"] for r in res]
-            infos = combiner.process_batch(main_rewards, subrewards_list)
+            infos = combiner.process_batch(
+                main_rewards,
+                subrewards_list,
+                global_step=_global_step(extra_info),
+                update_dual=_should_update_dual(extra_info),
+            )
             return [info["score"] for info in infos]
         else:
-            infos = combiner.process_batch([res["main_reward"]], [res["subrewards"]])
+            infos = combiner.process_batch(
+                [res["main_reward"]],
+                [res["subrewards"]],
+                global_step=_global_step(extra_info),
+                update_dual=_should_update_dual(extra_info),
+            )
             return infos[0] if infos else 0.0
             
     elif data_source.startswith("deepcoder"):
@@ -195,13 +286,31 @@ def compute_score(data_source, solution_str, ground_truth, extra_info=None, **kw
             main_reward, subrewards = res
             res = {"main_reward": main_reward, "subrewards": subrewards}
 
+        if combine_mode == "pdar":
+            if isinstance(res, list):
+                return [
+                    _pdar_reward_info(r["main_reward"], r["subrewards"], kwargs, signed=False)
+                    for r in res
+                ]
+            return _pdar_reward_info(res["main_reward"], res["subrewards"], kwargs, signed=False)
+
         if isinstance(res, list):
             main_rewards = [r["main_reward"] for r in res]
             subrewards_list = [r["subrewards"] for r in res]
-            infos = combiner.process_batch(main_rewards, subrewards_list)
+            infos = combiner.process_batch(
+                main_rewards,
+                subrewards_list,
+                global_step=_global_step(extra_info),
+                update_dual=_should_update_dual(extra_info),
+            )
             return [info["score"] for info in infos]
         else:
-            infos = combiner.process_batch([res["main_reward"]], [res["subrewards"]])
+            infos = combiner.process_batch(
+                [res["main_reward"]],
+                [res["subrewards"]],
+                global_step=_global_step(extra_info),
+                update_dual=_should_update_dual(extra_info),
+            )
             return infos[0] if infos else 0.0
 
     # Fallback to the default compute score for other data sources

@@ -47,6 +47,20 @@ async def _call_with_kwargs_async(raw_fn, extra_kwargs, *args, **kwargs):
     return await raw_fn(*args, **merged_kwargs)
 
 
+def _plain_dict(value: Any) -> dict[str, Any]:
+    """Convert OmegaConf/dict-like values into a plain dict."""
+    if value is None:
+        return {}
+    try:
+        from omegaconf import OmegaConf
+
+        if OmegaConf.is_config(value):
+            value = OmegaConf.to_container(value, resolve=True)
+    except Exception:
+        pass
+    return dict(value) if isinstance(value, dict) else {}
+
+
 def get_custom_reward_fn(config: DictConfig) -> Optional[RawRewardFn]:
     """Load and return a custom reward function from external file.
 
@@ -79,7 +93,19 @@ def get_custom_reward_fn(config: DictConfig) -> Optional[RawRewardFn]:
 
     raw_fn = load_extern_object(module_path=module_path, object_name=fn_name)
 
-    reward_kwargs = dict(reward_fn_config.get("reward_kwargs", {}))
+    # Legacy scripts pass custom reward kwargs via reward_model.reward_kwargs,
+    # which migrate_legacy_reward_impl moves to reward.reward_kwargs. Newer
+    # configs can put them directly under custom_reward_function.reward_kwargs.
+    # Merge both, letting the explicit custom_reward_function values win.
+    reward_kwargs = _plain_dict(config.reward.get("reward_kwargs", {}))
+    reward_kwargs.update(_plain_dict(reward_fn_config.get("reward_kwargs", {})))
+
+    sandbox_config = config.reward.get("sandbox_fusion")
+    sandbox_url = sandbox_config.get("url") if sandbox_config else None
+    if sandbox_url:
+        reward_kwargs.setdefault("sandbox_fusion_url", sandbox_url)
+        reward_kwargs.setdefault("memory_limit_mb", sandbox_config.get("memory_limit_mb", 1024))
+
     if not inspect.iscoroutinefunction(raw_fn):
         return partial(_call_with_kwargs, raw_fn, reward_kwargs)
     else:
