@@ -41,9 +41,9 @@ else
 fi
 
 # 2. Experiment Matrix
-REWARDS=("pd" "new" "ori")
+REWARDS=("pdar" "pd" "new" "ori")
 # Datasets for run_grpo_math.sh
-MATH_DATASETS=("deepscalar" "general365" "gsm8k")
+MATH_DATASETS=("gsm8k" "deepscalar" "general365")
 
 # Paths to scripts
 # run_grpo_math.sh is in the same directory
