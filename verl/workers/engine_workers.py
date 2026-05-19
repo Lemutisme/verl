@@ -691,6 +691,12 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
             await self.checkpoint_engine.send_weights(per_tensor_param)
             return
 
+        # This is deliberately not CPU offload: actor/ref parameters stay resident.
+        # Checkpointing/training can still leave large freed blocks in PyTorch's
+        # CUDA cache. vLLM's sleep-mode allocator maps weights through cuMem, which
+        # cannot reuse those cached PyTorch blocks. Release the cache before wake-up;
+        # otherwise step0 checkpoint -> resume(weights) can OOM at cumem_allocator.cpp:62.
+        aggressive_empty_cache(force_sync=True)
         set_expandable_segments(False)
         log_gpu_memory_usage("Before resume weights", logger=logger)
 

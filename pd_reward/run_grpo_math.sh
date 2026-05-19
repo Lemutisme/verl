@@ -359,11 +359,22 @@ export HYDRA_FULL_ERROR=1
 export RAY_DEDUP_LOGS=0
 export PYTHONUNBUFFERED=1
 export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:False"
-# Avoid vLLM/NCCL cuMem symmetric-memory paths that can OOM during sleep-mode wake-up.
+# These defaults are required for colocated actor/ref/vLLM on one GPU.
+# The failing pattern is: step0 checkpoint finishes, vLLM sleep-mode wakes weights,
+# then cuMem mapping fails with "CUDA Error: out of memory at cumem_allocator.cpp:62".
+# Disabling vLLM/NCCL cuMem symmetric-memory/custom-allreduce paths keeps that wake-up
+# from competing with the model/checkpoint allocations. Keep these together with the
+# matching Hydra override below; the environment variable alone is not sufficient.
 export VLLM_ALLREDUCE_USE_SYMM_MEM="${VLLM_ALLREDUCE_USE_SYMM_MEM:-0}"
 export NCCL_CUMEM_ENABLE="${NCCL_CUMEM_ENABLE:-0}"
+export VLLM_DISABLE_CUSTOM_ALL_REDUCE="${VLLM_DISABLE_CUSTOM_ALL_REDUCE:-true}"
+# Keep vLLM sleep-mode cache management enabled. The trainer releases PyTorch's
+# cached blocks before wake-up, so this does not require CPU parameter offload.
+FREE_CACHE_ENGINE="${FREE_CACHE_ENGINE:-true}"
 echo "[INFO] VLLM_ALLREDUCE_USE_SYMM_MEM=${VLLM_ALLREDUCE_USE_SYMM_MEM}"
 echo "[INFO] NCCL_CUMEM_ENABLE=${NCCL_CUMEM_ENABLE}"
+echo "[INFO] VLLM_DISABLE_CUSTOM_ALL_REDUCE=${VLLM_DISABLE_CUSTOM_ALL_REDUCE}"
+echo "[INFO] FREE_CACHE_ENGINE=${FREE_CACHE_ENGINE}"
 
 RAY_ADDRESS=${RAY_ADDRESS:-""}
 
@@ -465,7 +476,7 @@ mkdir -p "${CKPTS_DIR}"
 
 RAY_TMP_ROOT=${RAY_TMP_ROOT:-"/tmp/ray_yujiz"}
 RAY_TMP_TAG=${RAY_TMP_TAG:-"$(date +%m%d%H%M%S)_$$"}
-RAY_TMPDIR=${RAY_TMPDIR:-"${RAY_TMP_ROOT}"}
+RAY_TMPDIR=${RAY_TMPDIR:-"${RAY_TMP_ROOT}/${RAY_TMP_TAG}"}
 mkdir -p "${RAY_TMPDIR}"
 if [[ ${#RAY_TMPDIR} -gt 40 ]]; then
   echo "[WARN] RAY_TMPDIR is ${#RAY_TMPDIR} chars: ${RAY_TMPDIR}" >&2
@@ -588,6 +599,8 @@ CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES} python3 -m verl.trainer.main_ppo \
   actor_rollout_ref.rollout.max_model_len="${VLLM_MAX_MODEL_LEN:-4096}" \
   actor_rollout_ref.rollout.name=vllm \
   actor_rollout_ref.rollout.agent.num_workers="${AGENT_NUM_WORKERS}" \
+  actor_rollout_ref.rollout.free_cache_engine="${FREE_CACHE_ENGINE}" \
+  ++actor_rollout_ref.rollout.engine_kwargs.vllm.disable_custom_all_reduce="${VLLM_DISABLE_CUSTOM_ALL_REDUCE}" \
   actor_rollout_ref.ref.fsdp_config.param_offload="${OFFLOAD}" \
   actor_rollout_ref.actor.fsdp_config.fsdp_size="${FSDP_SIZE}" \
   actor_rollout_ref.ref.fsdp_config.fsdp_size="${FSDP_SIZE}" \

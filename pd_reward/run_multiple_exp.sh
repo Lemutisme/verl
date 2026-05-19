@@ -1,32 +1,88 @@
 #!/usr/bin/env bash
 
 # run_multiple_exp.sh
-# Usage: bash run_multiple_exp.sh [-gpus xx]
+# Usage: bash run_multiple_exp.sh [-gpus xx] [-steps N] [-reward {pdar|pd|new|ori}]
 
 # Default values
 GPUS=""
 STEPS="400"
+REWARD_FILTER=""
+CLEANUP_RAY_VLLM=false
 DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+
+usage() {
+  cat <<'EOF'
+Usage:
+  bash run_multiple_exp.sh [-gpus xx] [-steps N] [-reward {pdar|pd|new|ori}] [--cleanup-ray-vllm]
+
+Options:
+  -gpus, --gpus             GPU ids to pass to child runs, e.g. 0 or 0,1
+  -steps, --steps           Total training steps for each child run (default: 400)
+  -reward, --reward         Run only one reward preset: pdar, pd, new, or ori
+  --cleanup-ray-vllm        Stop local Ray and kill vLLM before/after tasks
+  -h, --help                Show this help message
+
+By default this script does not stop Ray or kill vLLM, so other multi-GPU jobs
+on the same host are not interrupted.
+EOF
+}
+
+lower() {
+  printf '%s' "$1" | tr '[:upper:]' '[:lower:]'
+}
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    -gpus)
+    -gpus|--gpus)
+      [[ $# -ge 2 ]] || { echo "Missing value for $1" >&2; usage; exit 1; }
       GPUS="$2"
       shift 2
       ;;
     -steps|--steps)
+      [[ $# -ge 2 ]] || { echo "Missing value for $1" >&2; usage; exit 1; }
       STEPS="$2"
       shift 2
       ;;
+    -reward|--reward)
+      [[ $# -ge 2 ]] || { echo "Missing value for $1" >&2; usage; exit 1; }
+      REWARD_FILTER="$(lower "$2")"
+      shift 2
+      ;;
+    --cleanup-ray-vllm)
+      CLEANUP_RAY_VLLM=true
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
     *)
-      echo "Unknown argument: $1"
+      echo "Unknown argument: $1" >&2
+      usage
       exit 1
       ;;
   esac
 done
 
-# 1. Automatic GPU Detection
+# 1. Experiment Matrix
+REWARDS=("pdar" "pd" "new" "ori")
+if [ -n "$REWARD_FILTER" ]; then
+    case "$REWARD_FILTER" in
+        pdar|pd|new|ori)
+            REWARDS=("$REWARD_FILTER")
+            ;;
+        *)
+            echo "[ERROR] Unsupported reward preset: ${REWARD_FILTER}" >&2
+            usage
+            exit 1
+            ;;
+    esac
+fi
+echo "[INFO] Reward preset(s): ${REWARDS[*]}"
+echo "[INFO] Ray/vLLM cleanup enabled: ${CLEANUP_RAY_VLLM}"
+
+# 2. Automatic GPU Detection
 # If GPUS is not specified, find the GPU with the most free memory
 if [ -z "$GPUS" ]; then
     echo "[INFO] No GPUs specified. Detecting available GPU via nvidia-smi..."
@@ -41,8 +97,6 @@ else
     echo "[INFO] Using user-specified GPU(s): $GPUS"
 fi
 
-# 2. Experiment Matrix
-REWARDS=("pdar" "pd" "new" "ori")
 # Datasets for run_grpo_math.sh
 MATH_DATASETS=("gsm8k" "deepscalar" "general365")
 
@@ -67,6 +121,19 @@ log_failure() {
     else
         echo "[OK] Task '${task_name}' completed successfully."
     fi
+}
+
+cleanup_ray_vllm() {
+    local when=$1
+    if [ "$CLEANUP_RAY_VLLM" != true ]; then
+        echo "[INFO] Skipping Ray/vLLM cleanup ${when} (pass --cleanup-ray-vllm to enable)."
+        return 0
+    fi
+
+    echo "[INFO] Cleaning up Ray and potential zombie vLLM processes ${when}..."
+    ray stop --force >/dev/null 2>&1 || true
+    pkill -f vllm >/dev/null 2>&1 || true
+    sleep 3
 }
 
 # 2.2) GPU occupation helper (optional, use with -occupy flag)
@@ -95,11 +162,16 @@ except Exception as e:
 # Thus we must comment it out or set it to false:
 # export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"
 export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:False"
-# Avoid vLLM/NCCL cuMem symmetric-memory paths that can OOM during sleep-mode wake-up.
+# Child runs inherit these defaults, and run_grpo_math.sh also passes the matching
+# vLLM Hydra override. Keep them enabled for colocated actor/ref/vLLM jobs:
+# without them, step0 checkpoint -> vLLM sleep-mode wake-up can fail with
+# "CUDA Error: out of memory at cumem_allocator.cpp:62".
 export VLLM_ALLREDUCE_USE_SYMM_MEM="${VLLM_ALLREDUCE_USE_SYMM_MEM:-0}"
 export NCCL_CUMEM_ENABLE="${NCCL_CUMEM_ENABLE:-0}"
+export VLLM_DISABLE_CUSTOM_ALL_REDUCE="${VLLM_DISABLE_CUSTOM_ALL_REDUCE:-true}"
 echo "[INFO] VLLM_ALLREDUCE_USE_SYMM_MEM=${VLLM_ALLREDUCE_USE_SYMM_MEM}"
 echo "[INFO] NCCL_CUMEM_ENABLE=${NCCL_CUMEM_ENABLE}"
+echo "[INFO] VLLM_DISABLE_CUSTOM_ALL_REDUCE=${VLLM_DISABLE_CUSTOM_ALL_REDUCE}"
 
 # 2.4) Setup Global Logging Directory
 EXP_LOG_DIR="${DIR}/logs_multi_exp/$(date +%Y%m%d_%H%M%S)"
@@ -129,11 +201,7 @@ while true; do
             echo "  # REWARD PRESET: ${REWARD}"
             echo "  --------------------------------------------------------------"
 
-            # Ensure environment is clean before starting any task
-            echo "[INFO] Cleaning up ray and potential zombie vllm processes..."
-            ray stop --force >/dev/null 2>&1 || true
-            pkill -f vllm >/dev/null 2>&1 || true
-            sleep 3
+            cleanup_ray_vllm "before task"
 
             # Align with DeepCoder high-performance config
             export VLLM_GPU_UTIL=0.3
@@ -152,9 +220,7 @@ while true; do
             bash "${MATH_SCRIPT}" -reward "${REWARD}" -dataset "${DATASET}" -gpus "${GPUS}" -steps "${STEPS}" > >(tee "${TASK_OUT}") 2> >(tee "${TASK_ERR}" >&2)
             log_failure $? "Math:${DATASET}:${REWARD}"
             
-            echo "[INFO] Cleaning up after Task..."
-            ray stop --force >/dev/null 2>&1 || true
-            sleep 2
+            cleanup_ray_vllm "after task"
         done
     done
 
@@ -170,11 +236,7 @@ while true; do
         echo "  # REWARD PRESET: ${REWARD}"
         echo "  --------------------------------------------------------------"
 
-        # Ensure environment is clean before starting any task
-        echo "[INFO] Cleaning up ray and potential zombie vllm processes..."
-        ray stop --force >/dev/null 2>&1 || true
-        pkill -f vllm >/dev/null 2>&1 || true
-        sleep 3
+        cleanup_ray_vllm "before task"
 
         # Align with DeepCoder high-performance config
         export VLLM_GPU_UTIL=0.3
@@ -193,10 +255,7 @@ while true; do
         bash "${CODE_SCRIPT}" -reward "${REWARD}" -gpus "${GPUS}" -steps "${STEPS}" > >(tee "${TASK4_OUT}") 2> >(tee "${TASK4_ERR}" >&2)
         log_failure $? "Code:DeepCoder:${REWARD}"
         
-        echo "[INFO] Cleaning up after Task..."
-        ray stop --force >/dev/null 2>&1 || true
-        pkill -f "vllm|verl" >/dev/null 2>&1 || true
-        sleep 2
+        cleanup_ray_vllm "after task"
     done
 
     # Round Summary

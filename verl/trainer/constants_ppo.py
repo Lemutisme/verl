@@ -24,6 +24,11 @@ _major, _ = get_device_capability()
 # Megatron all_gather (mbridge export_weights) when NCCL tries to use NVLS/MNNVL.
 # Disable both on Blackwell (SM 10.x); non-Blackwell GPUs don't have MNNVL.
 _gb200_nccl_env = {"NCCL_NVLS_ENABLE": "0", "NCCL_MNNVL_ENABLE": "0"} if (_major or 0) >= 10 else {}
+# get_ppo_ray_runtime_env() normally drops env vars that already exist in the
+# launcher process. These cuMem knobs are exceptions: Ray workers must receive
+# the exact launcher values, otherwise colocated vLLM can re-enter the symmetric
+# memory path and OOM while waking sleep-mode weights after checkpointing.
+_CRITICAL_RUNTIME_ENV_KEYS = {"VLLM_ALLREDUCE_USE_SYMM_MEM", "NCCL_CUMEM_ENABLE"}
 
 PPO_RAY_RUNTIME_ENV = {
     "env_vars": {
@@ -31,7 +36,9 @@ PPO_RAY_RUNTIME_ENV = {
         "NCCL_DEBUG": "WARN",
         "VLLM_LOGGING_LEVEL": "WARN",
         "VLLM_ALLOW_RUNTIME_LORA_UPDATING": "true",
-        # Avoid vLLM/NCCL cuMem symmetric-memory paths during colocated sleep-mode wake-up.
+        # Avoid vLLM/NCCL cuMem symmetric-memory paths during colocated sleep-mode
+        # wake-up. This protects the step0 checkpoint -> update_weights path from
+        # vLLM cuMem OOMs at cumem_allocator.cpp:62.
         "VLLM_ALLREDUCE_USE_SYMM_MEM": "0",
         "NCCL_CUMEM_ENABLE": "0",
         "CUDA_DEVICE_MAX_CONNECTIONS": "1",
@@ -61,7 +68,10 @@ def get_ppo_ray_runtime_env():
         "env_vars": PPO_RAY_RUNTIME_ENV["env_vars"].copy(),
         **({"working_dir": None} if working_dir is None else {}),
     }
-    for key in list(runtime_env["env_vars"].keys()):
+    for key in _CRITICAL_RUNTIME_ENV_KEYS:
         if os.environ.get(key) is not None:
+            runtime_env["env_vars"][key] = os.environ[key]
+    for key in list(runtime_env["env_vars"].keys()):
+        if os.environ.get(key) is not None and key not in _CRITICAL_RUNTIME_ENV_KEYS:
             runtime_env["env_vars"].pop(key, None)
     return runtime_env
