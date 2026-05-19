@@ -128,6 +128,27 @@ def test_index_select_tensor_dict():
     tu.assert_tensordict_eq(selected_data, target_select_data)
 
 
+def test_index_select_tensor_dict_preserves_3d_nested_tensor_layout_with_equal_seq_len():
+    position_ids = tu.nested_tensor_from_tensor_list(
+        [
+            torch.arange(2).expand(4, 2),
+            torch.arange(5).expand(4, 5),
+            (torch.arange(5) + 10).expand(4, 5),
+            torch.arange(3).expand(4, 3),
+        ]
+    )
+    data = tu.get_tensordict({"position_ids": position_ids})
+
+    selected = tu.index_select_tensor_dict(data, torch.tensor([1, 2]))
+    expected = tu.nested_tensor_from_tensor_list([position_ids[1], position_ids[2]], ragged_idx=2)
+
+    assert selected["position_ids"]._ragged_idx == 2
+    assert selected["position_ids"].values().shape == torch.Size([4, 10])
+    assert torch.equal(selected["position_ids"].values(), expected.values())
+    assert torch.equal(selected["position_ids"].offsets(), expected.offsets())
+    tu.assert_tensordict_eq(selected, tu.get_tensordict({"position_ids": expected}))
+
+
 def test_tensordict_with_images():
     # each sample contains a sequence with multiple images of different sizes
     vocab_size = 128
@@ -674,6 +695,7 @@ def test_dataproto_chunk_after_index():
 
 
 def test_concat_nested_tensor():
+    # Test 2D nested tensors
     vocab_size = 128
     a = torch.randint(low=0, high=vocab_size, size=(11,))
     b = torch.randint(low=0, high=vocab_size, size=(13,))
@@ -689,6 +711,42 @@ def test_concat_nested_tensor():
     expected = torch.cat([a, b, c, d], dim=0)
 
     assert torch.all(torch.eq(output_values, expected)).item()
+
+    # Test 3D nested tensors
+    a_3d = torch.randint(low=0, high=vocab_size, size=(4, 4))
+    b_3d = torch.randint(low=0, high=vocab_size, size=(4, 5))
+    c_3d = torch.randint(low=0, high=vocab_size, size=(4, 6))
+    d_3d = torch.randint(low=0, high=vocab_size, size=(4, 7))
+
+    nested_a_b_3d = torch.nested.as_nested_tensor([a_3d, b_3d], layout=torch.jagged)
+    nested_c_d_3d = torch.nested.as_nested_tensor([c_3d, d_3d], layout=torch.jagged)
+
+    output_3d = tu.concat_nested_tensors([nested_a_b_3d, nested_c_d_3d])
+
+    assert output_3d.shape[0] == 4
+    output_3d_unbind = output_3d.unbind(0)
+    assert torch.all(torch.eq(output_3d_unbind[0], a_3d)).item()
+    assert torch.all(torch.eq(output_3d_unbind[1], b_3d)).item()
+    assert torch.all(torch.eq(output_3d_unbind[2], c_3d)).item()
+    assert torch.all(torch.eq(output_3d_unbind[3], d_3d)).item()
+
+    # Test 4D nested tensors
+    a_4d = torch.randint(low=0, high=vocab_size, size=(2, 3, 4))
+    b_4d = torch.randint(low=0, high=vocab_size, size=(2, 3, 5))
+    c_4d = torch.randint(low=0, high=vocab_size, size=(2, 3, 3))
+    d_4d = torch.randint(low=0, high=vocab_size, size=(2, 3, 6))
+
+    nested_a_b_4d = torch.nested.as_nested_tensor([a_4d, b_4d], layout=torch.jagged)
+    nested_c_d_4d = torch.nested.as_nested_tensor([c_4d, d_4d], layout=torch.jagged)
+
+    output_4d = tu.concat_nested_tensors([nested_a_b_4d, nested_c_d_4d])
+
+    assert output_4d.shape[0] == 4
+    output_4d_unbind = output_4d.unbind(0)
+    assert torch.all(torch.eq(output_4d_unbind[0], a_4d)).item()
+    assert torch.all(torch.eq(output_4d_unbind[1], b_4d)).item()
+    assert torch.all(torch.eq(output_4d_unbind[2], c_4d)).item()
+    assert torch.all(torch.eq(output_4d_unbind[3], d_4d)).item()
 
 
 def test_concat_tensordict():
@@ -755,6 +813,15 @@ def test_chunk_tensordict():
     input_ids = torch.nested.as_nested_tensor(
         [torch.arange(4), torch.arange(5), torch.arange(6), torch.arange(7)], layout=torch.jagged
     )
+    attention_mask = torch.nested.as_nested_tensor(
+        [
+            torch.randint(low=0, high=2, size=[3, 4]),
+            torch.randint(low=0, high=2, size=[3, 5]),
+            torch.randint(low=0, high=2, size=[3, 6]),
+            torch.randint(low=0, high=2, size=[3, 7]),
+        ],
+        layout=torch.jagged,
+    )
 
     multi_modal_inputs = torch.stack(
         [
@@ -768,6 +835,7 @@ def test_chunk_tensordict():
         {
             "input_ids": input_ids,
             "position_ids": position_ids,
+            "attention_mask": attention_mask,
             "multi_modal_inputs": multi_modal_inputs,
         },
     )
@@ -788,6 +856,68 @@ def test_chunk_tensordict():
                         assert expect is None
                     else:
                         assert torch.all(torch.eq(tensor.data["pixel_values"], expect["pixel_values"])).item()
+
+
+def test_chunk_tensordict_preserves_3d_nested_tensor_layout_with_equal_seq_len_per_chunk():
+    position_ids = tu.nested_tensor_from_tensor_list(
+        [
+            torch.arange(2).expand(4, 2),
+            (torch.arange(2) + 10).expand(4, 2),
+            torch.arange(5).expand(4, 5),
+            (torch.arange(5) + 20).expand(4, 5),
+        ]
+    )
+    input_ids = torch.nested.as_nested_tensor(
+        [torch.arange(2), torch.arange(2) + 10, torch.arange(5), torch.arange(5) + 20], layout=torch.jagged
+    )
+    td = tu.get_tensordict({"input_ids": input_ids, "position_ids": position_ids})
+
+    chunks = tu.chunk_tensordict(td, chunks=2)
+
+    expected_chunk_0 = tu.nested_tensor_from_tensor_list([position_ids[0], position_ids[1]], ragged_idx=2)
+    expected_chunk_1 = tu.nested_tensor_from_tensor_list([position_ids[2], position_ids[3]], ragged_idx=2)
+
+    assert chunks[0]["position_ids"]._ragged_idx == 2
+    assert chunks[1]["position_ids"]._ragged_idx == 2
+    assert torch.equal(chunks[0]["position_ids"].values(), expected_chunk_0.values())
+    assert torch.equal(chunks[1]["position_ids"].values(), expected_chunk_1.values())
+    assert torch.equal(chunks[0]["position_ids"].offsets(), expected_chunk_0.offsets())
+    assert torch.equal(chunks[1]["position_ids"].offsets(), expected_chunk_1.offsets())
+
+
+def test_chunk_tensordict_preserves_3d_nested_tensor_layout_with_non_last_ragged_idx():
+    """Regression test: chunk_tensordict must handle nested tensors where the ragged dimension is not the last one."""
+    topk = 64
+    elements = [torch.randn(5, topk), torch.randn(8, topk), torch.randn(3, topk), torch.randn(7, topk)]
+    teacher_logprobs = tu.nested_tensor_from_tensor_list(elements, ragged_idx=1)
+
+    input_ids = torch.nested.as_nested_tensor(
+        [torch.arange(5), torch.arange(8), torch.arange(3), torch.arange(7)], layout=torch.jagged
+    )
+    td = tu.get_tensordict({"input_ids": input_ids, "teacher_logprobs": teacher_logprobs})
+
+    chunks = tu.chunk_tensordict(td, chunks=2)
+
+    assert chunks[0]["teacher_logprobs"]._ragged_idx == 1
+    assert torch.equal(chunks[0]["teacher_logprobs"].unbind(0)[0], elements[0])
+    assert torch.equal(chunks[0]["teacher_logprobs"].unbind(0)[1], elements[1])
+    assert chunks[1]["teacher_logprobs"]._ragged_idx == 1
+    assert torch.equal(chunks[1]["teacher_logprobs"].unbind(0)[0], elements[2])
+    assert torch.equal(chunks[1]["teacher_logprobs"].unbind(0)[1], elements[3])
+
+
+def test_index_select_tensor_dict_preserves_3d_nested_tensor_layout_with_non_last_ragged_idx():
+    """Regression test: index_select_tensor_dict must handle nested tensors where the ragged dim is not the last."""
+    topk = 64
+    elements = [torch.randn(5, topk), torch.randn(8, topk), torch.randn(3, topk), torch.randn(7, topk)]
+    teacher_logprobs = tu.nested_tensor_from_tensor_list(elements, ragged_idx=1)
+    td = tu.get_tensordict({"teacher_logprobs": teacher_logprobs})
+
+    selected = tu.index_select_tensor_dict(td, torch.tensor([1, 3]))
+
+    assert selected["teacher_logprobs"]._ragged_idx == 1
+    assert torch.equal(selected["teacher_logprobs"].unbind(0)[0], elements[1])
+    assert torch.equal(selected["teacher_logprobs"].unbind(0)[1], elements[3])
 
 
 def test_assign_non_tensor_stack_with_nested_lists():
@@ -988,3 +1118,34 @@ def test_get_tensordict_agent_loop_scenario():
 
     # Verify metadata
     assert td["global_steps"] == 42
+
+
+def test_contiguous():
+    # create a tensordict that contains normal tensor, nested tensor,
+    # nontensorstack with numpy, nontensorstack with tensor, NonTensorData with numpy and NonTensorData with tensor
+
+    a = torch.randn(3, 4)  # contiguous tensor
+    b = torch.randn(3, 4)[:, :-1]  # non contiguous tensor
+    c = torch.nested.as_nested_tensor([torch.randn(3), torch.randn(4), torch.randn(5)], layout=torch.jagged)
+
+    d = torch.randn(10, 12)
+    e = torch.randn(11, 12)
+    f = torch.randn(13, 12)
+
+    data = tu.get_tensordict(
+        tensor_dict={"a": a, "b": b, "c": c, "nt": [{"pixel": d}, {"pixel": e}, {"pixel": f}]},
+        non_tensor_dict={"ntd": a.clone()},
+    )
+
+    with pytest.raises(RuntimeError):
+        # b is not contiguous
+        data.consolidate()
+
+    data1 = copy.deepcopy(data)
+    data_cont = tu.contiguous(data1)
+
+    tu.assert_tensordict_eq(data_cont, data)
+
+    data_cont.consolidate()
+
+    tu.assert_tensordict_eq(data_cont, data)

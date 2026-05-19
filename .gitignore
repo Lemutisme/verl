@@ -1,4 +1,3 @@
-
 **/*.pt
 **/checkpoints
 **/wget-log
@@ -8,6 +7,8 @@
 **/*.tar.gz
 **/playground
 **/wandb
+
+/pyrightconfig.json
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
@@ -98,6 +99,7 @@ celerybeat-schedule
 venv/
 .venv/
 ENV/
+!**/workers/env/
 
 # Spyder project settings
 .spyderproject
