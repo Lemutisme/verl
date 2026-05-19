@@ -258,6 +258,9 @@ def compute_advantage(
             adv_kwargs["index"] = data.non_tensor_batch["uid"]
         if "reward_baselines" in data.batch:  # optional
             adv_kwargs["reward_baselines"] = data.batch["reward_baselines"]
+        # PDAR: forward auxiliary reward tensor if present
+        if "aux_token_level_scores" in data.batch:
+            adv_kwargs["aux_rewards_tensor"] = data.batch["aux_token_level_scores"]
 
         # calculate advantage estimator
         advantages, returns = adv_estimator_fn(**adv_kwargs)
@@ -1575,6 +1578,24 @@ class RayPPOTrainer:
                         if reward_extra_infos_dict:
                             batch.non_tensor_batch.update({k: np.array(v) for k, v in reward_extra_infos_dict.items()})
 
+                        # PDAR: construct aux reward tensor from reward_extra_info
+                        if (
+                            reward_extra_infos_dict
+                            and "aux_reward_combined" in reward_extra_infos_dict
+                        ):
+                            aux_values = reward_extra_infos_dict["aux_reward_combined"]
+                            aux_tensor = torch.zeros_like(
+                                batch.batch["token_level_scores"], dtype=torch.float32
+                            )
+                            response_length = batch.batch["responses"].shape[-1]
+                            attention_mask = batch.batch["attention_mask"]
+                            for i, aux_val in enumerate(aux_values):
+                                resp_mask = attention_mask[i, -response_length:]
+                                valid_len = resp_mask.sum().long().item()
+                                if valid_len > 0:
+                                    aux_tensor[i, valid_len - 1] = float(aux_val)
+                            batch.batch["aux_token_level_scores"] = aux_tensor
+
                         # compute rewards. apply_kl_penalty if available
                         if self.config.algorithm.use_kl_in_reward:
                             batch, kl_metrics = apply_kl_penalty(
@@ -1613,6 +1634,14 @@ class RayPPOTrainer:
                             norm_adv_by_std_in_grpo=norm_adv_by_std_in_grpo,
                             config=self.config.algorithm,
                         )
+
+                        # PDAR: collect metrics from the advantage estimator
+                        try:
+                            from pdar_advantage import PDAR_METRICS
+                            if PDAR_METRICS:
+                                metrics.update(PDAR_METRICS)
+                        except ImportError:
+                            pass
 
                     # update critic
                     if self.use_critic:

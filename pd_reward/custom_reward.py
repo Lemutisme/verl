@@ -15,6 +15,12 @@ from reward_score.sub_reward import collect_subrewards, weight_overrides, to_boo
 import reward_score.mbpp_action_thought_reward as mbpp_evaluator
 import reward_score.deepcoder_action_thought_reward as deepcoder_evaluator
 
+# Register PDAR advantage estimator when this module is imported
+try:
+    import pdar_init  # noqa: F401 — triggers @register_adv_est("pdar")
+except ImportError:
+    pass  # PDAR not available in this installation
+
 # Initialize the generic combiner (will parse kwargs for combine_mode="pd"|"multiplier")
 # We delay initialization until the first call to ensure we have the kwargs
 
@@ -105,6 +111,23 @@ def _score_math(data_source, solution_str, ground_truth, extra_info=None, **kwar
             else:
                 base_res = signed_score
         return base_res
+
+    # --- PDAR mode: return separate channels, skip reward-level combination ---
+    if combine_mode == "pdar":
+        main_reward = 1.0 if base_acc else 0.0
+        if to_bool(kwargs.get("math_signed_reward", True), True):
+            main_reward = 1.0 if base_acc else -1.0
+        # Aggregate subrewards into a single aux channel
+        aux_combined = sum(subrewards.values()) / max(len(subrewards), 1)
+        return {
+            "score": main_reward,           # used as token_level_scores (main only)
+            "main_reward": main_reward,      # flows to reward_extra_info
+            "aux_reward_combined": aux_combined,  # flows to reward_extra_info
+            "aux_rewards": subrewards,        # individual aux signals for logging
+            "acc": bool(base_acc),
+            "base_math_score": float(base_score),
+            "original_reward": float(base_score),
+        }
 
     combiner = _get_combiner(kwargs)
     main_reward = 1.0 if base_acc else 0.0

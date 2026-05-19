@@ -177,6 +177,12 @@ case "${REWARD_KIND}" in
     COMBINE_MODE="pd"
     MATH_ENABLE_SUB_REWARDS=${MATH_ENABLE_SUB_REWARDS:-true}
     ;;
+  pdar|pdar_reward)
+    REWARD_LABEL="pdar"
+    COMBINE_MODE="pdar"
+    ADV_ESTIMATOR="pdar"
+    MATH_ENABLE_SUB_REWARDS=${MATH_ENABLE_SUB_REWARDS:-true}
+    ;;
   *)
     echo "Unsupported reward preset: ${REWARD_KIND}" >&2
     usage
@@ -368,6 +374,16 @@ fi
 EXP_NAME=${EXP_NAME:-"${DEFAULT_EXP_NAME}"}
 
 ADV_ESTIMATOR=${ADV_ESTIMATOR:-"grpo"}
+
+# PDAR hyperparameters (only used when ADV_ESTIMATOR=pdar)
+PDAR_ETA_C=${PDAR_ETA_C:-0.05}
+PDAR_ETA_S=${PDAR_ETA_S:-0.01}
+PDAR_LAMBDA_C_MAX=${PDAR_LAMBDA_C_MAX:-1.0}
+PDAR_LAMBDA_S_MAX=${PDAR_LAMBDA_S_MAX:-2.0}
+PDAR_TAU_C=${PDAR_TAU_C:-0.5}
+PDAR_TAU_S=${PDAR_TAU_S:-1.5}
+PDAR_SIGN_C=${PDAR_SIGN_C:-1.0}
+PDAR_SHARPNESS_EMA_ALPHA=${PDAR_SHARPNESS_EMA_ALPHA:-0.1}
 
 SAVE_EVERY_STEPS=${CLI_SAVE_FREQ:-${SAVE_EVERY_STEPS:--1}}
 EVAL_EVERY_STEPS=${EVAL_EVERY_STEPS:-5}
@@ -589,6 +605,14 @@ CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES} python3 -m verl.trainer.main_ppo \
   ++reward_model.reward_kwargs.math_efficiency_min_tokens="${MATH_EFFICIENCY_MIN_TOKENS}" \
   ++reward_model.reward_kwargs.math_efficiency_max_tokens="${MATH_EFFICIENCY_MAX_TOKENS}" \
   ++reward_model.reward_kwargs.math_efficiency_post_answer_max_tokens="${MATH_EFFICIENCY_POST_ANSWER_MAX_TOKENS}" \
+  ++reward_model.reward_kwargs.pdar_eta_c="${PDAR_ETA_C}" \
+  ++reward_model.reward_kwargs.pdar_eta_s="${PDAR_ETA_S}" \
+  ++reward_model.reward_kwargs.pdar_lambda_c_max="${PDAR_LAMBDA_C_MAX}" \
+  ++reward_model.reward_kwargs.pdar_lambda_s_max="${PDAR_LAMBDA_S_MAX}" \
+  ++reward_model.reward_kwargs.pdar_tau_c="${PDAR_TAU_C}" \
+  ++reward_model.reward_kwargs.pdar_tau_s="${PDAR_TAU_S}" \
+  ++reward_model.reward_kwargs.pdar_sign_c="${PDAR_SIGN_C}" \
+  ++reward_model.reward_kwargs.pdar_sharpness_ema_alpha="${PDAR_SHARPNESS_EMA_ALPHA}" \
   algorithm.use_kl_in_reward="${USE_KL_IN_REWARD}" \
   algorithm.kl_penalty="${KL_PENALTY}" \
   algorithm.kl_ctrl.type="${KL_CTRL_TYPE}" \
