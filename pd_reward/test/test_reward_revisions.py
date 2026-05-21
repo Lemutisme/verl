@@ -12,7 +12,7 @@ if str(PROJECT_DIR) not in sys.path:
     sys.path.insert(0, str(PROJECT_DIR))
 
 
-def test_pdar_deepcoder_acc_is_strict_and_keeps_partial_metrics(monkeypatch):
+def test_pdpo_deepcoder_acc_is_strict_and_keeps_partial_metrics(monkeypatch):
     import custom_reward
 
     def fake_coding_score(*_, **__):
@@ -31,7 +31,7 @@ def test_pdar_deepcoder_acc_is_strict_and_keeps_partial_metrics(monkeypatch):
         "deepcoder_unit",
         "solution",
         {"tests": "[]"},
-        combine_mode="pdar",
+        combine_mode="pdpo",
         coding_enable_sub_rewards=True,
     )
 
@@ -153,7 +153,7 @@ def test_mbpp_and_eurus_sources_route_to_general_coding_evaluator(monkeypatch):
             source,
             "print(1)",
             {"tests": json.dumps({"inputs": ["1"], "outputs": ["1"]})},
-            combine_mode="pdar",
+            combine_mode="pdpo",
             coding_enable_sub_rewards=True,
         )
         assert info["main_reward"] == 1.0

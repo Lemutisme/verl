@@ -18,8 +18,6 @@ import torch
 
 from verl.trainer.ppo.core_algos import register_adv_est
 
-from reward_score.pdar_core import group_normalize_scores, selective_damp
-
 
 PDPO_METRICS: dict[str, float] = {}
 
@@ -70,8 +68,6 @@ class PDPOConfig:
             candidates = [key]
             if key.startswith("pdpo_"):
                 candidates.append(key[len("pdpo_"):])
-            if key.startswith("pdar_"):
-                candidates.append(key[len("pdar_"):])
 
             for candidate in candidates:
                 short = aliases.get(candidate, candidate)
@@ -218,6 +214,56 @@ def _group_indices(index: np.ndarray, bsz: int) -> dict[Any, list[int]]:
     for i in range(bsz):
         id2indices[index[i]].append(i)
     return id2indices
+
+
+def group_normalize_scores(
+    scores: torch.Tensor,
+    index: np.ndarray,
+    norm_by_std: bool = True,
+    eps: float = 1e-6,
+) -> torch.Tensor:
+    """Compute group-relative scores for one scalar channel."""
+    id2scores: dict[Any, list[torch.Tensor]] = defaultdict(list)
+    bsz = scores.shape[0]
+
+    with torch.no_grad():
+        for i in range(bsz):
+            id2scores[index[i]].append(scores[i])
+
+        id2mean: dict[Any, torch.Tensor] = {}
+        id2std: dict[Any, torch.Tensor] = {}
+        for group_id, group_scores in id2scores.items():
+            if len(group_scores) == 1:
+                id2mean[group_id] = torch.tensor(0.0, device=scores.device)
+                id2std[group_id] = torch.tensor(1.0, device=scores.device)
+            else:
+                stacked = torch.stack(group_scores)
+                id2mean[group_id] = stacked.mean()
+                id2std[group_id] = stacked.std()
+
+        normed = scores.clone()
+        for i in range(bsz):
+            if norm_by_std:
+                normed[i] = (scores[i] - id2mean[index[i]]) / (id2std[index[i]] + eps)
+            else:
+                normed[i] = scores[i] - id2mean[index[i]]
+    return normed
+
+
+def selective_damp(
+    advantages: torch.Tensor,
+    lambda_s: float,
+    eps: float = 1e-6,
+) -> torch.Tensor:
+    """Compress extreme within-group advantages while preserving rank and sign."""
+    if lambda_s <= 0.0:
+        return advantages
+
+    mean = advantages.mean()
+    std = advantages.std() + eps
+    deviation = (advantages - mean) / std
+    stable_deviation = deviation / (1.0 + lambda_s * deviation.abs())
+    return mean + std * stable_deviation
 
 
 def _active_group_mask(scores: torch.Tensor, id2indices: dict[Any, list[int]], min_std: float) -> torch.Tensor:

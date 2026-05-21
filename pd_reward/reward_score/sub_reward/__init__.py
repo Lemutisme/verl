@@ -113,16 +113,3 @@ def collect_subrewards(category: str, ctx: dict[str, Any], **kwargs: Any) -> dic
         subrewards[sub_name] = score
         kwargs.setdefault(f"weight_{sub_name}", weight)
     return subrewards
-
-
-def weight_overrides(category: str, **kwargs: Any) -> dict[str, float]:
-    weights = {}
-    for name in CATEGORY_MODULES.get(category, {}):
-        sub_name = _prefixed_name(category, name)
-        weights[f"weight_{sub_name}"] = _get_float(
-            kwargs,
-            f"{category}_weight_{name}",
-            f"weight_{sub_name}",
-            default=DEFAULT_WEIGHTS.get(category, {}).get(name, 1.0),
-        )
-    return weights

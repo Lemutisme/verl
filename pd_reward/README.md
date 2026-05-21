@@ -135,7 +135,7 @@ For PDPO, the trainer ignores `aux_reward_combined` and reads the flattened per-
 
 ### Trainer Path
 
-[ray_trainer.py](/shared/nas2/yujiz/rl/verl/verl/trainer/ppo/ray_trainer.py) registers the local `pdpo` estimator. The legacy `pdar` estimator still exists in the tree for old checkpoints/scripts, but new runs should use only `pdpo`, `new`, or `ori`.
+[ray_trainer.py](/shared/nas2/yujiz/rl/verl/verl/trainer/ppo/ray_trainer.py) registers the local `pdpo` estimator. New runs should use only `pdpo`, `new`, or `ori`.
 
 For `pdpo`, it extracts numeric aux channels from `data.non_tensor_batch`:
 
@@ -309,9 +309,8 @@ PDPO_BETA_TIE=0.10 PDPO_BETA_SAME=0.70 \
 ```text
 pd_reward/
 ├── custom_reward.py              # Reward entry point and flattened reward extras
-├── pdar_advantage.py             # Legacy PDAR advantage estimator
 ├── pdpo_advantage.py             # PDPO advantage estimator
-├── pdar_init.py                  # Registers local advantage estimators
+├── pdpo_init.py                  # Registers local PDPO estimator
 ├── run_grpo_math.sh              # Math/general training launcher
 ├── run_grpo.sh                   # Coding training launcher
 ├── run_multiple_exp.sh           # Multi-experiment launcher
@@ -319,11 +318,8 @@ pd_reward/
 │   └── prepare_eurus_data.py      # Eurus-2-RL coding train/eval preparation
 ├── reward_score/
 │   ├── coding_executable_reward.py # Shared coding executable reward path
-│   ├── primal_dual_core.py       # Legacy reward-level PD/static mix logic
-│   ├── pdar_core.py              # Shared group norm and sharpness damping helpers
 │   └── sub_reward/               # Math/coding subreward modules
 └── test/
-    ├── test_pdar_advantage.py
     ├── test_pdpo_advantage.py
     └── test_reward_revisions.py
 ```

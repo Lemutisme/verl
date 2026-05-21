@@ -141,12 +141,12 @@ def _estimator_name(adv_estimator: AdvantageEstimator | str) -> str:
 
 def _ensure_custom_adv_estimator_registered(adv_estimator: AdvantageEstimator | str) -> None:
     """Import local estimator registration hooks that are not part of core_algos."""
-    if _estimator_name(adv_estimator) not in {"pdar", "pdpo"}:
+    if _estimator_name(adv_estimator) != "pdpo":
         return
     try:
-        import pd_reward.pdar_init  # noqa: F401
+        import pd_reward.pdpo_init  # noqa: F401
     except ImportError:
-        import pdar_init  # noqa: F401
+        import pdpo_init  # noqa: F401
 
 
 def _plain_config_dict(value: Any) -> dict[str, Any]:
@@ -330,12 +330,7 @@ def compute_advantage(
             adv_kwargs["index"] = data.non_tensor_batch["uid"]
         if "reward_baselines" in data.batch:  # optional
             adv_kwargs["reward_baselines"] = data.batch["reward_baselines"]
-        # PDAR: forward auxiliary reward tensor if present
-        if "aux_token_level_scores" in data.batch:
-            adv_kwargs["aux_rewards_tensor"] = data.batch["aux_token_level_scores"]
         estimator_name = _estimator_name(adv_estimator)
-        if estimator_name == "pdar":
-            adv_kwargs["pdar_config_dict"] = reward_kwargs or {}
         if estimator_name == "pdpo":
             adv_kwargs["pdpo_config_dict"] = reward_kwargs or {}
             adv_kwargs["pdpo_aux_rewards_dict"] = _pdpo_aux_rewards_from_non_tensor(
@@ -1764,24 +1759,6 @@ class RayPPOTrainer:
                         if reward_extra_infos_dict:
                             batch.non_tensor_batch.update({k: np.array(v) for k, v in reward_extra_infos_dict.items()})
 
-                        # PDAR: construct aux reward tensor from reward_extra_info
-                        if (
-                            reward_extra_infos_dict
-                            and "aux_reward_combined" in reward_extra_infos_dict
-                        ):
-                            aux_values = reward_extra_infos_dict["aux_reward_combined"]
-                            aux_tensor = torch.zeros_like(
-                                batch.batch["token_level_scores"], dtype=torch.float32
-                            )
-                            response_length = batch.batch["responses"].shape[-1]
-                            attention_mask = batch.batch["attention_mask"]
-                            for i, aux_val in enumerate(aux_values):
-                                resp_mask = attention_mask[i, -response_length:]
-                                valid_len = resp_mask.sum().long().item()
-                                if valid_len > 0:
-                                    aux_tensor[i, valid_len - 1] = float(aux_val)
-                            batch.batch["aux_token_level_scores"] = aux_tensor
-
                         # compute rewards. apply_kl_penalty if available
                         if self.config.algorithm.use_kl_in_reward:
                             batch, kl_metrics = apply_kl_penalty(
@@ -1822,13 +1799,6 @@ class RayPPOTrainer:
                             reward_kwargs=_reward_kwargs_from_config(self.config),
                         )
 
-                        # PDAR: collect metrics from the advantage estimator
-                        try:
-                            from pdar_advantage import PDAR_METRICS
-                            if PDAR_METRICS:
-                                metrics.update(PDAR_METRICS)
-                        except ImportError:
-                            pass
                         try:
                             from pdpo_advantage import PDPO_METRICS
                             if PDPO_METRICS:

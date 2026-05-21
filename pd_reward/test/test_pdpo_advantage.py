@@ -32,13 +32,13 @@ def _make_token_rewards(scores, response_length=4):
 
 
 def _load_pdpo():
-    import pdar_init  # noqa: F401
+    import pdpo_init  # noqa: F401
     from verl.trainer.ppo.core_algos import get_adv_estimator_fn
 
     return get_adv_estimator_fn("pdpo")
 
 
-def test_pdpo_is_registered_by_pdar_init():
+def test_pdpo_is_registered_by_pdpo_init():
     assert callable(_load_pdpo())
 
 

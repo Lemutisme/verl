@@ -13,18 +13,14 @@ if current_dir not in sys.path:
 from verl.utils.reward_score import default_compute_score
 from verl.utils.reward_score import math_dapo
 
-from reward_score.primal_dual_core import GenericRewardCombiner
-from reward_score.sub_reward import collect_subrewards, weight_overrides, to_bool, clip
+from reward_score.sub_reward import collect_subrewards, to_bool, clip
 import reward_score.coding_executable_reward as coding_evaluator
 
 # Register local advantage estimators when this module is imported
 try:
-    import pdar_init  # noqa: F401 — triggers @register_adv_est("pdar")
+    import pdpo_init  # noqa: F401
 except ImportError:
-    pass  # PDAR not available in this installation
-
-# Initialize the generic combiner (will parse kwargs for combine_mode="pd"|"multiplier")
-# We delay initialization until the first call to ensure we have the kwargs
+    pass
 
 
 MATH_DATA_SOURCES = {
@@ -55,9 +51,6 @@ CODING_DATA_SOURCES = {
 }
 
 
-_COMBINER_CACHE = {}
-
-
 _LABELED_ANSWER_RE = re.compile(r"(?i)(?:final\s+answer|answer)\s*[:：]\s*([^\n]+)")
 _LATEX_FRAC_RE = re.compile(r"\\frac\{([^{}]+)\}\{([^{}]+)\}")
 
@@ -69,27 +62,27 @@ def _to_float(v: Any, default: float = 0.0) -> float:
         return default
 
 
-def _extra_info_dict(extra_info: Any) -> dict[str, Any]:
-    return extra_info if isinstance(extra_info, dict) else {}
-
-
-def _global_step(extra_info: Any) -> int:
-    extra = _extra_info_dict(extra_info)
-    for key in ("global_step", "global_steps"):
-        if key in extra and extra[key] is not None:
-            try:
-                return int(extra[key])
-            except (TypeError, ValueError):
-                return -1
-    return -1
-
-
-def _should_update_dual(extra_info: Any) -> bool:
-    return not to_bool(_extra_info_dict(extra_info).get("is_validation", False), False)
+def _normalize_combine_mode(value: Any) -> str:
+    mode = str(value or "none").strip().lower().replace("_", "-")
+    aliases = {
+        "": "none",
+        "none": "none",
+        "original": "none",
+        "ori": "none",
+        "new": "multiplier",
+        "new-reward": "multiplier",
+        "static": "multiplier",
+        "multiplier": "multiplier",
+        "pdpo": "pdpo",
+        "pdpo-reward": "pdpo",
+    }
+    if mode in aliases:
+        return aliases[mode]
+    raise ValueError(f"Unsupported combine_mode: {value!r}; expected none, multiplier/new, or pdpo")
 
 
 def _is_advantage_aux_mode(combine_mode: str) -> bool:
-    return combine_mode in {"pdpo", "pdar"}
+    return combine_mode == "pdpo"
 
 
 def _subreward_weight(name: str, kwargs: dict[str, Any]) -> float:
@@ -266,7 +259,7 @@ def _flatten_subrewards(info: dict[str, Any], subrewards: dict[str, float]) -> d
     return info
 
 
-def _pdar_reward_info(
+def _pdpo_reward_info(
     main_reward: float,
     subrewards: dict[str, float],
     kwargs: dict[str, Any],
@@ -291,14 +284,14 @@ def _pdar_reward_info(
     return _flatten_subrewards(info, subrewards)
 
 
-def _coding_pdar_reward_info(
+def _coding_pdpo_reward_info(
     main_reward: float,
     subrewards: dict[str, float],
     kwargs: dict[str, Any],
 ) -> dict[str, Any]:
     partial_pass_rate = max(0.0, min(1.0, float(main_reward)))
     strict_threshold = _to_float(kwargs.get("coding_strict_acc_threshold"), 1.0)
-    return _pdar_reward_info(
+    return _pdpo_reward_info(
         main_reward,
         subrewards,
         kwargs,
@@ -311,16 +304,70 @@ def _coding_pdar_reward_info(
     )
 
 
-def _get_combiner(kwargs: dict[str, Any]) -> GenericRewardCombiner:
+def _static_reward_info(
+    main_reward: float,
+    subrewards: dict[str, float],
+    kwargs: dict[str, Any],
+    *,
+    signed: bool = False,
+    acc: bool | None = None,
+    original_reward: float | None = None,
+    extra_metrics: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    reward = float(main_reward)
+    for name, value in subrewards.items():
+        reward += _subreward_weight(name, kwargs) * float(value)
+    reward = clip(reward, 0.0, 1.0)
+    score = 2.0 * reward - 1.0 if signed else reward
 
-    combine_mode = str(kwargs.get("combine_mode", "none")).lower()
-    if combine_mode not in _COMBINER_CACHE:
-        combiner_kwargs = {k: v for k, v in kwargs.items() if k not in ["combine_mode"]}
-        combiner_kwargs.update(weight_overrides("coding", **kwargs))
-        combiner_kwargs.update(weight_overrides("math", **kwargs))
-        _COMBINER_CACHE[combine_mode] = GenericRewardCombiner(combine_mode=combine_mode, subreward_names=[], **combiner_kwargs)
-    
-    return _COMBINER_CACHE[combine_mode]
+    info = {
+        "score": float(score),
+        "combined_reward": float(score),
+        "main_reward": float(main_reward),
+        "acc": bool(main_reward > 0.0) if acc is None else bool(acc),
+        "original_reward": float(main_reward if original_reward is None else original_reward),
+    }
+    if extra_metrics:
+        info.update(extra_metrics)
+    for name, value in subrewards.items():
+        info[f"{name}_reward"] = float(value)
+        info[f"weight_{name}"] = float(_subreward_weight(name, kwargs))
+    return _flatten_subrewards(info, subrewards)
+
+
+def _coding_main_reward_info(main_reward: float, kwargs: dict[str, Any]) -> dict[str, Any]:
+    partial_pass_rate = max(0.0, min(1.0, float(main_reward)))
+    strict_threshold = _to_float(kwargs.get("coding_strict_acc_threshold"), 1.0)
+    return {
+        "score": partial_pass_rate,
+        "combined_reward": partial_pass_rate,
+        "main_reward": partial_pass_rate,
+        "acc": partial_pass_rate >= strict_threshold,
+        "original_reward": partial_pass_rate,
+        "partial_pass_rate": partial_pass_rate,
+        "any_pass": partial_pass_rate > 0.0,
+    }
+
+
+def _coding_static_reward_info(
+    main_reward: float,
+    subrewards: dict[str, float],
+    kwargs: dict[str, Any],
+) -> dict[str, Any]:
+    partial_pass_rate = max(0.0, min(1.0, float(main_reward)))
+    strict_threshold = _to_float(kwargs.get("coding_strict_acc_threshold"), 1.0)
+    return _static_reward_info(
+        partial_pass_rate,
+        subrewards,
+        kwargs,
+        signed=False,
+        acc=partial_pass_rate >= strict_threshold,
+        original_reward=partial_pass_rate,
+        extra_metrics={
+            "partial_pass_rate": partial_pass_rate,
+            "any_pass": partial_pass_rate > 0.0,
+        },
+    )
 
 
 def _score_math(data_source, solution_str, ground_truth, extra_info=None, **kwargs):
@@ -355,7 +402,7 @@ def _score_math(data_source, solution_str, ground_truth, extra_info=None, **kwar
         base_score = float(base_res.get("score", 0.0)) if isinstance(base_res, dict) else float(base_res)
         base_acc = bool(base_res.get("acc", base_score > 0.0)) if isinstance(base_res, dict) else base_score > 0.0
 
-    combine_mode = str(kwargs.get("combine_mode", "none")).lower()
+    combine_mode = _normalize_combine_mode(kwargs.get("combine_mode", "none"))
     if combine_mode == "none" or not to_bool(kwargs.get("math_enable_sub_rewards", False), False):
         if to_bool(kwargs.get("math_signed_reward", True), True):
             signed_score = 1.0 if base_acc else -1.0
@@ -386,7 +433,7 @@ def _score_math(data_source, solution_str, ground_truth, extra_info=None, **kwar
 
     # Advantage-level process modes return separate channels and skip reward-level combination.
     if _is_advantage_aux_mode(combine_mode):
-        info = _pdar_reward_info(
+        info = _pdpo_reward_info(
             1.0 if base_acc else 0.0,
             subrewards,
             kwargs,
@@ -397,28 +444,16 @@ def _score_math(data_source, solution_str, ground_truth, extra_info=None, **kwar
         info["original_reward"] = float(base_score)
         return info
 
-    combiner = _get_combiner(kwargs)
     main_reward = 1.0 if base_acc else 0.0
-    info = combiner.process_batch(
-        [main_reward],
-        [subrewards],
-        global_step=_global_step(extra_info),
-        update_dual=_should_update_dual(extra_info),
-    )[0]
-
-    if to_bool(kwargs.get("math_signed_reward", True), True):
-        if combine_mode == "pd":
-            # PD rewards are already in [-1, 1] from process_batch clipping;
-            # remap to signed scale: positive for correct, negative for wrong
-            info["score"] = clip(info["score"], -1.0, 1.0)
-        else:
-            info["score"] = 2.0 * clip(info["score"], 0.0, 1.0) - 1.0
-        info["combined_reward"] = info["score"]
-
+    info = _static_reward_info(
+        main_reward,
+        subrewards,
+        kwargs,
+        signed=to_bool(kwargs.get("math_signed_reward", True), True),
+        acc=base_acc,
+        original_reward=float(base_score),
+    )
     info["base_math_score"] = float(base_score)
-    info["original_reward"] = float(base_score)
-    info["acc"] = bool(base_acc)
-    _flatten_subrewards(info, subrewards)
     if isinstance(base_res, dict) and "pred" in base_res:
         info["pred"] = base_res["pred"]
     return info
@@ -428,8 +463,7 @@ def compute_score(data_source, solution_str, ground_truth, extra_info=None, **kw
     if ds_str in MATH_DATA_SOURCES or ds_str.startswith("aime") or ds_str.startswith("deepscalar") or "math" in ds_str:
         return _score_math(data_source, solution_str, ground_truth, extra_info=extra_info, **kwargs)
 
-    combine_mode = str(kwargs.get("combine_mode", "none")).lower()
-    combiner = _get_combiner(kwargs)
+    combine_mode = _normalize_combine_mode(kwargs.get("combine_mode", "none"))
         
     if data_source in ["mbpp:train", "mbpp:test", "mbpp:validation", "mbpp"]:
         # Pass return_components=True to just get the raw components
@@ -450,29 +484,21 @@ def compute_score(data_source, solution_str, ground_truth, extra_info=None, **kw
         if _is_advantage_aux_mode(combine_mode):
             if isinstance(res, list):
                 return [
-                    _coding_pdar_reward_info(r["main_reward"], r["subrewards"], kwargs)
+                    _coding_pdpo_reward_info(r["main_reward"], r["subrewards"], kwargs)
                     for r in res
                 ]
-            return _coding_pdar_reward_info(res["main_reward"], res["subrewards"], kwargs)
+            return _coding_pdpo_reward_info(res["main_reward"], res["subrewards"], kwargs)
 
         if isinstance(res, list):
-            main_rewards = [r["main_reward"] for r in res]
-            subrewards_list = [r["subrewards"] for r in res]
-            infos = combiner.process_batch(
-                main_rewards,
-                subrewards_list,
-                global_step=_global_step(extra_info),
-                update_dual=_should_update_dual(extra_info),
-            )
+            if combine_mode == "none":
+                infos = [_coding_main_reward_info(r["main_reward"], kwargs) for r in res]
+            else:
+                infos = [_coding_static_reward_info(r["main_reward"], r["subrewards"], kwargs) for r in res]
             return [info["score"] for info in infos]
-        else:
-            infos = combiner.process_batch(
-                [res["main_reward"]],
-                [res["subrewards"]],
-                global_step=_global_step(extra_info),
-                update_dual=_should_update_dual(extra_info),
-            )
-            return infos[0] if infos else 0.0
+
+        if combine_mode == "none":
+            return _coding_main_reward_info(res["main_reward"], kwargs)
+        return _coding_static_reward_info(res["main_reward"], res["subrewards"], kwargs)
             
     elif _is_coding_data_source(data_source):
         sandbox_fusion_url = kwargs.get("sandbox_fusion_url", None)
@@ -495,29 +521,21 @@ def compute_score(data_source, solution_str, ground_truth, extra_info=None, **kw
         if _is_advantage_aux_mode(combine_mode):
             if isinstance(res, list):
                 return [
-                    _coding_pdar_reward_info(r["main_reward"], r["subrewards"], kwargs)
+                    _coding_pdpo_reward_info(r["main_reward"], r["subrewards"], kwargs)
                     for r in res
                 ]
-            return _coding_pdar_reward_info(res["main_reward"], res["subrewards"], kwargs)
+            return _coding_pdpo_reward_info(res["main_reward"], res["subrewards"], kwargs)
 
         if isinstance(res, list):
-            main_rewards = [r["main_reward"] for r in res]
-            subrewards_list = [r["subrewards"] for r in res]
-            infos = combiner.process_batch(
-                main_rewards,
-                subrewards_list,
-                global_step=_global_step(extra_info),
-                update_dual=_should_update_dual(extra_info),
-            )
+            if combine_mode == "none":
+                infos = [_coding_main_reward_info(r["main_reward"], kwargs) for r in res]
+            else:
+                infos = [_coding_static_reward_info(r["main_reward"], r["subrewards"], kwargs) for r in res]
             return [info["score"] for info in infos]
-        else:
-            infos = combiner.process_batch(
-                [res["main_reward"]],
-                [res["subrewards"]],
-                global_step=_global_step(extra_info),
-                update_dual=_should_update_dual(extra_info),
-            )
-            return infos[0] if infos else 0.0
+
+        if combine_mode == "none":
+            return _coding_main_reward_info(res["main_reward"], kwargs)
+        return _coding_static_reward_info(res["main_reward"], res["subrewards"], kwargs)
 
     # Fallback to the default compute score for other data sources
     return default_compute_score(data_source, solution_str, ground_truth, extra_info=extra_info, **kwargs)
