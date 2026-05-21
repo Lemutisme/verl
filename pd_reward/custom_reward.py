@@ -15,8 +15,7 @@ from verl.utils.reward_score import math_dapo
 
 from reward_score.primal_dual_core import GenericRewardCombiner
 from reward_score.sub_reward import collect_subrewards, weight_overrides, to_bool, clip
-import reward_score.mbpp_action_thought_reward as mbpp_evaluator
-import reward_score.deepcoder_action_thought_reward as deepcoder_evaluator
+import reward_score.coding_executable_reward as coding_evaluator
 
 # Register PDAR advantage estimator when this module is imported
 try:
@@ -430,7 +429,13 @@ def compute_score(data_source, solution_str, ground_truth, extra_info=None, **kw
         
     if data_source in ["mbpp:train", "mbpp:test", "mbpp:validation", "mbpp"]:
         # Pass return_components=True to just get the raw components
-        res = mbpp_evaluator.compute_score_mbpp(solution_str, ground_truth, return_components=True, **kwargs)
+        res = coding_evaluator.compute_score_coding(
+            solution_str,
+            ground_truth,
+            eval_mode="assert",
+            return_components=True,
+            **kwargs,
+        )
         
         # Determine if it's a batch or single
         if not isinstance(res, (list, dict)):
@@ -469,8 +474,9 @@ def compute_score(data_source, solution_str, ground_truth, extra_info=None, **kw
         sandbox_fusion_url = kwargs.get("sandbox_fusion_url", None)
         concurrent_semaphore = kwargs.get("concurrent_semaphore", None)
 
-        res = deepcoder_evaluator.compute_score_deepcoder(
+        res = coding_evaluator.compute_score_coding(
             solution_str, ground_truth, 
+            eval_mode="stdio",
             sandbox_url=sandbox_fusion_url, 
             concurrent_semaphore=concurrent_semaphore, 
             return_components=True, 

@@ -12,10 +12,12 @@ CATEGORY_MODULES = {
 
 DEFAULT_ENABLED = {
     "coding": {
+        "code_extractability_reward": True,
+        "syntax_validity_reward": True,
         "unit_test_pass_rate": False,
         "compiler_runtime_feedback": True,
         "static_analysis_reward": False,
-        "executed_token_credit": True,
+        "executed_token_credit": False,
         "block_level_process_reward": False,
     },
     "math": {
@@ -32,10 +34,12 @@ DEFAULT_ENABLED = {
 
 DEFAULT_WEIGHTS = {
     "coding": {
+        "code_extractability_reward": 0.15,
+        "syntax_validity_reward": 0.25,
         "unit_test_pass_rate": 0.0,
         "compiler_runtime_feedback": 0.30,
         "static_analysis_reward": 0.0,
-        "executed_token_credit": 0.20,
+        "executed_token_credit": 0.0,
         "block_level_process_reward": 0.0,
     },
     "math": {

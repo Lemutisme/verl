@@ -9,8 +9,7 @@ def compute(ctx: dict[str, Any], **_: Any) -> float:
         return len(set(executed)) / float(len(total_lines))
 
     total = int(ctx.get("eval_total") or 0)
-    passed = int(ctx.get("eval_passed") or 0)
     if total <= 0:
         return 0.0
 
-    return max(0.0, min(1.0, passed / float(total)))
+    return 0.0

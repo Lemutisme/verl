@@ -15,16 +15,16 @@ if str(PROJECT_DIR) not in sys.path:
 def test_pdar_deepcoder_acc_is_strict_and_keeps_partial_metrics(monkeypatch):
     import custom_reward
 
-    def fake_deepcoder_score(*_, **__):
+    def fake_coding_score(*_, **__):
         return {
             "main_reward": 0.5,
             "subrewards": {"coding_compiler_runtime_feedback": 0.5},
         }
 
     monkeypatch.setattr(
-        custom_reward.deepcoder_evaluator,
-        "compute_score_deepcoder",
-        fake_deepcoder_score,
+        custom_reward.coding_evaluator,
+        "compute_score_coding",
+        fake_coding_score,
     )
 
     info = custom_reward.compute_score(
@@ -42,7 +42,7 @@ def test_pdar_deepcoder_acc_is_strict_and_keeps_partial_metrics(monkeypatch):
 
 
 def test_deepcoder_extracts_raw_code_after_explanation_without_fence():
-    from reward_score import deepcoder_action_thought_reward as deepcoder
+    from reward_score import coding_executable_reward as coding
 
     response = (
         "We can solve it directly.\n\n"
@@ -51,7 +51,7 @@ def test_deepcoder_extracts_raw_code_after_explanation_without_fence():
         "print(s[::-1])\n"
     )
 
-    assert deepcoder._extract_code(response) == (
+    assert coding._extract_code(response) == (
         "import sys\n"
         "s = sys.stdin.read().strip()\n"
         "print(s[::-1])"
@@ -59,11 +59,11 @@ def test_deepcoder_extracts_raw_code_after_explanation_without_fence():
 
 
 def test_deepcoder_normalizes_list_style_stdio_tests():
-    from reward_score import deepcoder_action_thought_reward as deepcoder
+    from reward_score import coding_executable_reward as coding
 
     tests = json.dumps({"inputs": [["abc def"]], "outputs": [["cbafed"]]})
 
-    parsed = deepcoder._get_tests_deepcoder({"tests": tests})
+    parsed = coding.parse_io_tests({"tests": tests})
 
     assert parsed["inputs"] == ["abc def"]
     assert parsed["outputs"] == ["cbafed"]
@@ -71,7 +71,7 @@ def test_deepcoder_normalizes_list_style_stdio_tests():
 
 
 def test_deepcoder_decodes_compressed_lcb_tests():
-    from reward_score import deepcoder_action_thought_reward as deepcoder
+    from reward_score import coding_executable_reward as coding
 
     payload = json.dumps(
         {
@@ -82,7 +82,7 @@ def test_deepcoder_decodes_compressed_lcb_tests():
     )
     encoded = base64.b64encode(zlib.compress(pickle.dumps(payload))).decode()
 
-    parsed = deepcoder._get_tests_deepcoder({"tests": encoded})
+    parsed = coding.parse_io_tests({"tests": encoded})
 
     assert parsed["inputs"] == ["1\nabc\n"]
     assert parsed["outputs"] == ["YES\n"]
@@ -92,11 +92,14 @@ def test_compiler_runtime_feedback_does_not_reward_zero_passes():
     from reward_score.sub_reward.coding import compiler_runtime_feedback
 
     assert compiler_runtime_feedback.compute({"eval_total": 4, "eval_passed": 0}) == 0.0
-    assert compiler_runtime_feedback.compute({"eval_total": 4, "eval_passed": 2}) == pytest.approx(0.5)
+    assert compiler_runtime_feedback.compute(
+        {"eval_total": 4, "eval_passed": 0, "code_compile_ok": True}
+    ) == pytest.approx(0.35)
+    assert compiler_runtime_feedback.compute({"eval_total": 4, "eval_passed": 2}) == pytest.approx(0.75)
     assert compiler_runtime_feedback.compute({"eval_total": 4, "eval_passed": 4}) == 1.0
 
 
-def test_executed_token_credit_without_coverage_uses_pass_rate_only():
+def test_executed_token_credit_without_coverage_does_not_duplicate_pass_rate():
     from reward_score.sub_reward.coding import executed_token_credit
 
     ctx = {
@@ -104,15 +107,78 @@ def test_executed_token_credit_without_coverage_uses_pass_rate_only():
         "eval_total": 4,
         "eval_passed": 1,
     }
-    assert executed_token_credit.compute(ctx) == pytest.approx(0.25)
+    assert executed_token_credit.compute(ctx) == 0.0
+
+
+def test_general_coding_components_do_not_emit_dataset_specific_thought_action(monkeypatch):
+    from reward_score import coding_executable_reward as coding
+
+    monkeypatch.setattr(coding, "_run_stdio_eval", lambda *_, **__: (0, 3, ""))
+
+    main_reward, subrewards = coding.compute_score_coding(
+        "print(1)",
+        {"tests": json.dumps({"inputs": ["1", "2", "3"], "outputs": ["2", "3", "4"]})},
+        return_components=True,
+        coding_enable_sub_rewards=True,
+    )
+
+    assert main_reward == 0.0
+    assert "thought" not in subrewards
+    assert "action" not in subrewards
+    assert subrewards["coding_code_extractability_reward"] == 1.0
+    assert subrewards["coding_syntax_validity_reward"] == 1.0
+    assert subrewards["coding_compiler_runtime_feedback"] > 0.0
+
+
+def test_mbpp_and_eurus_sources_route_to_general_coding_evaluator(monkeypatch):
+    import custom_reward
+
+    calls = []
+
+    def fake_general_coding_score(*args, **kwargs):
+        calls.append((args, kwargs))
+        return {
+            "main_reward": 1.0,
+            "subrewards": {"coding_syntax_validity_reward": 1.0},
+        }
+
+    monkeypatch.setattr(
+        custom_reward.coding_evaluator,
+        "compute_score_coding",
+        fake_general_coding_score,
+    )
+
+    for source in ("mbpp", "code_contests"):
+        info = custom_reward.compute_score(
+            source,
+            "print(1)",
+            {"tests": json.dumps({"inputs": ["1"], "outputs": ["1"]})},
+            combine_mode="pdar",
+            coding_enable_sub_rewards=True,
+        )
+        assert info["main_reward"] == 1.0
+        assert info["acc"] is True
+
+    assert [call[1]["eval_mode"] for call in calls] == ["assert", "stdio"]
+
+
+def test_eurus_preprocess_uses_general_coding_test_parser():
+    script = (PROJECT_DIR / "data_preprocess" / "prepare_eurus_data.py").read_text()
+
+    assert "from reward_score.coding_executable_reward import parse_io_tests" in script
+    assert "_get_tests_deepcoder" not in script
 
 
 def test_static_and_block_coding_rewards_are_not_enabled_by_default():
     from reward_score.sub_reward import DEFAULT_ENABLED, DEFAULT_WEIGHTS
 
+    assert DEFAULT_ENABLED["coding"]["code_extractability_reward"] is True
+    assert DEFAULT_ENABLED["coding"]["syntax_validity_reward"] is True
     assert DEFAULT_ENABLED["coding"]["static_analysis_reward"] is False
+    assert DEFAULT_ENABLED["coding"]["executed_token_credit"] is False
     assert DEFAULT_ENABLED["coding"]["block_level_process_reward"] is False
     assert DEFAULT_WEIGHTS["coding"]["static_analysis_reward"] == 0.0
+    assert DEFAULT_WEIGHTS["coding"]["executed_token_credit"] == 0.0
     assert DEFAULT_WEIGHTS["coding"]["block_level_process_reward"] == 0.0
 
 
@@ -150,17 +216,25 @@ def test_math_pdar_ori_mode_uses_ori_reward_with_pdar_advantage():
     assert "MATH_ENABLE_SUB_REWARDS=${MATH_ENABLE_SUB_REWARDS:-false}" in mode_block
 
 
-def test_deepcoder_pdar_script_defaults_to_non_saturated_aux_rewards():
+def test_coding_pdar_script_defaults_to_general_aux_rewards():
     script = (PROJECT_DIR / "run_grpo.sh").read_text()
     pdar_start = script.index("  pdar|pdar_reward)")
     pdar_end = script.index("  *)", pdar_start)
     pdar_block = script[pdar_start:pdar_end]
 
-    assert "DEEPCODER_ENABLE_THOUGHT=${DEEPCODER_ENABLE_THOUGHT:-false}" in pdar_block
-    assert "DEEPCODER_BETA=${DEEPCODER_BETA:-0.0}" in pdar_block
-    assert "DEEPCODER_GAMMA=${DEEPCODER_GAMMA:-0.0}" in pdar_block
+    assert "DEEPCODER_ENABLE_THOUGHT" not in script
+    assert "DEEPCODER_BETA" not in script
+    assert "DEEPCODER_GAMMA" not in script
+    assert "CODING_PERF_GATE=${CODING_PERF_GATE:--1.0}" in script
+    assert "CODING_ENABLE_CODE_EXTRACTABILITY_REWARD=${CODING_ENABLE_CODE_EXTRACTABILITY_REWARD:-true}" in script
+    assert "CODING_WEIGHT_CODE_EXTRACTABILITY_REWARD=${CODING_WEIGHT_CODE_EXTRACTABILITY_REWARD:-0.15}" in script
+    assert "CODING_ENABLE_SYNTAX_VALIDITY_REWARD=${CODING_ENABLE_SYNTAX_VALIDITY_REWARD:-true}" in script
+    assert "CODING_WEIGHT_SYNTAX_VALIDITY_REWARD=${CODING_WEIGHT_SYNTAX_VALIDITY_REWARD:-0.25}" in script
+    assert "CODING_ENABLE_SUB_REWARDS=${CODING_ENABLE_SUB_REWARDS:-true}" in pdar_block
     assert "CODING_ENABLE_STATIC_ANALYSIS_REWARD=${CODING_ENABLE_STATIC_ANALYSIS_REWARD:-false}" in script
     assert "CODING_WEIGHT_STATIC_ANALYSIS_REWARD=${CODING_WEIGHT_STATIC_ANALYSIS_REWARD:-0.0}" in script
+    assert "CODING_ENABLE_EXECUTED_TOKEN_CREDIT=${CODING_ENABLE_EXECUTED_TOKEN_CREDIT:-false}" in script
+    assert "CODING_WEIGHT_EXECUTED_TOKEN_CREDIT=${CODING_WEIGHT_EXECUTED_TOKEN_CREDIT:-0.0}" in script
     assert "CODING_ENABLE_BLOCK_LEVEL_PROCESS_REWARD=${CODING_ENABLE_BLOCK_LEVEL_PROCESS_REWARD:-false}" in script
     assert "CODING_WEIGHT_BLOCK_LEVEL_PROCESS_REWARD=${CODING_WEIGHT_BLOCK_LEVEL_PROCESS_REWARD:-0.0}" in script
 
@@ -185,8 +259,8 @@ def test_eurus_coding_sources_route_to_executable_reward(monkeypatch):
         }
 
     monkeypatch.setattr(
-        custom_reward.deepcoder_evaluator,
-        "compute_score_deepcoder",
+        custom_reward.coding_evaluator,
+        "compute_score_coding",
         fake_coding_score,
     )
 
@@ -213,7 +287,6 @@ def test_deepcoder_pdar_ori_mode_uses_ori_reward_with_pdar_advantage():
     assert 'COMBINE_MODE="none"' in mode_block
     assert 'ADV_ESTIMATOR="pdar"' in mode_block
     assert "CODING_ENABLE_SUB_REWARDS=${CODING_ENABLE_SUB_REWARDS:-false}" in mode_block
-    assert "DEEPCODER_ENABLE_THOUGHT=${DEEPCODER_ENABLE_THOUGHT:-false}" in mode_block
 
 
 def test_math_script_prefers_formatted_deepscalar_train_data():

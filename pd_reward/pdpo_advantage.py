@@ -142,9 +142,6 @@ def _channel_weight(name: str, config_dict: dict[str, Any]) -> float:
         candidates.append(f"math_weight_{name[len('math_'):]}")
     if name.startswith("coding_"):
         candidates.append(f"coding_weight_{name[len('coding_'):]}")
-    if name in {"thought", "action"}:
-        candidates.append(f"weight_{name}")
-
     for candidate in candidates:
         if candidate in config_dict:
             return _to_float(config_dict[candidate], 1.0)
@@ -170,7 +167,6 @@ def _is_aux_channel(name: str) -> bool:
     return name not in _EXCLUDED_AUX_KEYS and (
         name.startswith("math_")
         or name.startswith("coding_")
-        or name in {"thought", "action"}
     )
 
 

@@ -139,7 +139,7 @@ For PDPO, the trainer ignores `aux_reward_combined` and reads the flattened per-
 
 For `pdpo`, it extracts numeric aux channels from `data.non_tensor_batch`:
 
-- included: `math_*`, `coding_*`, `thought`, `action`
+- included: `math_*`, `coding_*`
 - excluded: `score`, `main_reward`, `original_reward`, `acc`, `partial_pass_rate`, `aux_reward_combined`, metadata fields
 
 ### Advantage Path
@@ -238,24 +238,23 @@ MATH_WEIGHT_ANSWER_EXTRACTABILITY_REWARD=0.15
 
 ### Coding Subrewards
 
-The current Eurus coding defaults avoid the saturated/thought-action rewards and keep the more direct execution signals:
+The coding path uses one general executable reward implementation for MBPP-style assert tests and Eurus/DeepCoder-style
+stdin/stdout tests. Dataset-specific thought/action rewards are not part of the active aux channels.
 
 ```bash
-DEEPCODER_ENABLE_THOUGHT=false
-DEEPCODER_BETA=0.0
-DEEPCODER_GAMMA=0.0
-
+CODING_ENABLE_CODE_EXTRACTABILITY_REWARD=true
+CODING_WEIGHT_CODE_EXTRACTABILITY_REWARD=0.15
+CODING_ENABLE_SYNTAX_VALIDITY_REWARD=true
+CODING_WEIGHT_SYNTAX_VALIDITY_REWARD=0.25
 CODING_ENABLE_COMPILER_RUNTIME_FEEDBACK=true
 CODING_WEIGHT_COMPILER_RUNTIME_FEEDBACK=0.30
-CODING_ENABLE_EXECUTED_TOKEN_CREDIT=true
-CODING_WEIGHT_EXECUTED_TOKEN_CREDIT=0.20
+CODING_ENABLE_EXECUTED_TOKEN_CREDIT=false
+CODING_WEIGHT_EXECUTED_TOKEN_CREDIT=0.0
 CODING_ENABLE_STATIC_ANALYSIS_REWARD=false
 CODING_WEIGHT_STATIC_ANALYSIS_REWARD=0.0
 CODING_ENABLE_BLOCK_LEVEL_PROCESS_REWARD=false
 CODING_WEIGHT_BLOCK_LEVEL_PROCESS_REWARD=0.0
 ```
-
-The `DEEPCODER_*` names are legacy aliases for the shared coding executable reward path.
 
 ## Hyperparameters
 
@@ -318,6 +317,7 @@ pd_reward/
 ├── data_preprocess/
 │   └── prepare_eurus_data.py      # Eurus-2-RL coding train/eval preparation
 ├── reward_score/
+│   ├── coding_executable_reward.py # Shared coding executable reward path
 │   ├── primal_dual_core.py       # Reward-level PD logic
 │   ├── pdar_core.py              # Shared group norm and sharpness damping helpers
 │   └── sub_reward/               # Math/coding subreward modules

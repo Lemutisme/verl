@@ -18,7 +18,7 @@ for path in (PROJECT_DIR, REPO_DIR):
     if str(path) not in sys.path:
         sys.path.insert(0, str(path))
 
-from reward_score.deepcoder_action_thought_reward import _get_tests_deepcoder
+from reward_score.coding_executable_reward import parse_io_tests
 
 
 EURUS_DATASET = "PRIME-RL/Eurus-2-RL-Data"
@@ -47,7 +47,7 @@ def _normalized_reward_model(reward_model: Any) -> dict[str, Any] | None:
     if not isinstance(reward_model, dict):
         return None
 
-    parsed = _get_tests_deepcoder({"tests": reward_model.get("ground_truth")})
+    parsed = parse_io_tests({"tests": reward_model.get("ground_truth")})
     inputs = parsed.get("inputs") or []
     outputs = parsed.get("outputs") or []
     if not inputs or len(inputs) != len(outputs):

@@ -17,7 +17,7 @@ if str(PROJECT_DIR) not in sys.path:
 if str(REPO_DIR) not in sys.path:
     sys.path.insert(0, str(REPO_DIR))
 
-from reward_score.deepcoder_action_thought_reward import _get_tests_deepcoder
+from reward_score.coding_executable_reward import parse_io_tests
 
 
 def _normalized_reward_model(reward_model: Any) -> dict[str, Any] | None:
@@ -25,7 +25,7 @@ def _normalized_reward_model(reward_model: Any) -> dict[str, Any] | None:
         return None
 
     ground_truth = reward_model.get("ground_truth")
-    parsed = _get_tests_deepcoder({"tests": ground_truth})
+    parsed = parse_io_tests({"tests": ground_truth})
     inputs = parsed.get("inputs") or []
     outputs = parsed.get("outputs") or []
     if not inputs or len(inputs) != len(outputs):
