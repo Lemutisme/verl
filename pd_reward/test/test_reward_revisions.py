@@ -165,13 +165,41 @@ def test_deepcoder_pdar_script_defaults_to_non_saturated_aux_rewards():
     assert "CODING_WEIGHT_BLOCK_LEVEL_PROCESS_REWARD=${CODING_WEIGHT_BLOCK_LEVEL_PROCESS_REWARD:-0.0}" in script
 
 
-def test_deepcoder_script_prefers_cleaned_train_and_eval_data():
+def test_coding_script_prefers_eurus_train_and_eval_data():
     script = (PROJECT_DIR / "run_grpo.sh").read_text()
 
-    assert "deepcoder_full_train_clean.parquet" in script
-    assert "code_eval_master_clean.parquet" in script
-    assert "DEEPCODER_TRAIN_FILE" in script
-    assert "DEEPCODER_VAL_FILE" in script
+    assert "eurus_code_train.parquet" in script
+    assert "eurus_code_val.parquet" in script
+    assert "EURUS_TRAIN_FILE" in script
+    assert "EURUS_VAL_FILE" in script
+    assert 'PROJECT_NAME=${PROJECT_NAME:-"eurus_grpo"}' in script
+
+
+def test_eurus_coding_sources_route_to_executable_reward(monkeypatch):
+    import custom_reward
+
+    def fake_coding_score(*_, **__):
+        return {
+            "main_reward": 1.0,
+            "subrewards": {"coding_compiler_runtime_feedback": 1.0},
+        }
+
+    monkeypatch.setattr(
+        custom_reward.deepcoder_evaluator,
+        "compute_score_deepcoder",
+        fake_coding_score,
+    )
+
+    info = custom_reward.compute_score(
+        "code_contests",
+        "print(input())",
+        '{"inputs": ["1\\n"], "outputs": ["1\\n"]}',
+        combine_mode="pdar",
+        coding_enable_sub_rewards=True,
+    )
+
+    assert info["main_reward"] == 1.0
+    assert info["acc"] is True
 
 
 def test_deepcoder_pdar_ori_mode_uses_ori_reward_with_pdar_advantage():
@@ -193,6 +221,8 @@ def test_math_script_prefers_formatted_deepscalar_train_data():
 
     assert "deepscalar_train_formatted.parquet" in script
     assert "DEEPSCALAR_TRAIN_FILE" in script
+    assert "math_eval_deepscalar.parquet" in script
+    assert "DEEPSCALAR_VAL_FILE" in script
 
 
 def test_math_script_prefers_formatted_general365_train_data():
@@ -258,3 +288,20 @@ def test_pdpo_modes_are_available_but_not_added_to_default_matrix():
     assert 'REWARDS=("pdar" "pd" "new" "ori")' in multi_script
     assert 'pdpo|pdpo_reward)' in multi_script
     assert 'REWARDS=("pdpo")' in multi_script
+
+
+def test_multi_experiment_runner_labels_code_benchmark_as_eurus():
+    script = (PROJECT_DIR / "run_multiple_exp.sh").read_text()
+
+    assert "BENCHMARK: eurus" in script
+    assert "code_eurus" in script
+    assert "Code:Eurus" in script
+    assert "BENCHMARK: deepcoder" not in script
+
+
+def test_multi_experiment_runner_uses_deepscalar_as_only_math_dataset():
+    script = (PROJECT_DIR / "run_multiple_exp.sh").read_text()
+
+    assert 'MATH_DATASETS=("deepscalar")' in script
+    assert '"general365"' not in script
+    assert '"gsm8k"' not in script

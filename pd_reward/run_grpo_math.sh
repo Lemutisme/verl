@@ -559,6 +559,8 @@ case "${DATASET}" in
   deepscalar)
     DEEPSCALAR_DEFAULT_TRAIN_FILE="${RAY_DATA_HOME}/math/deepscalar_train.parquet"
     DEEPSCALAR_FORMATTED_TRAIN_FILE="${RAY_DATA_HOME}/math/deepscalar_train_formatted.parquet"
+    DEEPSCALAR_DEFAULT_VAL_FILE="${RAY_DATA_HOME}/math/math_eval_master.parquet"
+    DEEPSCALAR_EVAL_FILE="${RAY_DATA_HOME}/math/math_eval_deepscalar.parquet"
     if [[ -n "${DEEPSCALAR_TRAIN_FILE:-}" ]]; then
       TRAIN_FILE="${DEEPSCALAR_TRAIN_FILE}"
     elif [[ -f "${DEEPSCALAR_FORMATTED_TRAIN_FILE}" ]]; then
@@ -566,7 +568,13 @@ case "${DATASET}" in
     else
       TRAIN_FILE="${DEEPSCALAR_DEFAULT_TRAIN_FILE}"
     fi
-    VAL_FILE="${RAY_DATA_HOME}/math/math_eval_master.parquet"
+    if [[ -n "${DEEPSCALAR_VAL_FILE:-}" ]]; then
+      VAL_FILE="${DEEPSCALAR_VAL_FILE}"
+    elif [[ -f "${DEEPSCALAR_EVAL_FILE}" ]]; then
+      VAL_FILE="${DEEPSCALAR_EVAL_FILE}"
+    else
+      VAL_FILE="${DEEPSCALAR_DEFAULT_VAL_FILE}"
+    fi
     ;;
   general365)
     GENERAL365_DEFAULT_TRAIN_FILE="${RAY_DATA_HOME}/general365/train.parquet"

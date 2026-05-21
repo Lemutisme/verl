@@ -36,31 +36,34 @@ else
   echo "[WARN] Skipping General365 formatting: ${RAY_DATA_HOME}/general365/train.parquet not found"
 fi
 
+if [[ -f "${RAY_DATA_HOME}/general365/test.parquet" ]]; then
+  python3 "${SCRIPT_DIR}/format_math_prompts.py" \
+    --input "${RAY_DATA_HOME}/general365/test.parquet" \
+    --output "${RAY_DATA_HOME}/general365/test_formatted.parquet" \
+    --force-hash
+else
+  echo "[WARN] Skipping General365 eval formatting: ${RAY_DATA_HOME}/general365/test.parquet not found"
+fi
+
 echo ""
 echo "=========================================="
-echo "[INFO] Running Code Data Preparation..."
+echo "[INFO] Running DeepScaleR Eval Data Preparation..."
 echo "=========================================="
-python3 "${SCRIPT_DIR}/prepare_code_eval.py"
+python3 "${SCRIPT_DIR}/prepare_deepscalar_eval.py" \
+  --base-eval "${RAY_DATA_HOME}/math/math_eval_master.parquet" \
+  --general365-eval "${RAY_DATA_HOME}/general365/test_formatted.parquet" \
+  --output "${RAY_DATA_HOME}/math/math_eval_deepscalar.parquet"
 
 echo ""
 echo "=========================================="
-echo "[INFO] Running DeepCoder Data Repairs..."
+echo "[INFO] Running Eurus Code Data Preparation..."
 echo "=========================================="
-if [[ -f "${RAY_DATA_HOME}/math/deepcoder_full_train.parquet" ]]; then
-  python3 "${SCRIPT_DIR}/clean_deepcoder_data.py" \
-    --input "${RAY_DATA_HOME}/math/deepcoder_full_train.parquet" \
-    --output "${RAY_DATA_HOME}/math/deepcoder_full_train_clean.parquet"
-else
-  echo "[WARN] Skipping DeepCoder train cleaning: ${RAY_DATA_HOME}/math/deepcoder_full_train.parquet not found"
-fi
-
-if [[ -f "${RAY_DATA_HOME}/coding/code_eval_master.parquet" ]]; then
-  python3 "${SCRIPT_DIR}/clean_deepcoder_data.py" \
-    --input "${RAY_DATA_HOME}/coding/code_eval_master.parquet" \
-    --output "${RAY_DATA_HOME}/coding/code_eval_master_clean.parquet"
-else
-  echo "[WARN] Skipping DeepCoder eval cleaning: ${RAY_DATA_HOME}/coding/code_eval_master.parquet not found"
-fi
+python3 "${SCRIPT_DIR}/prepare_eurus_data.py" \
+  --dataset "${EURUS_DATASET:-PRIME-RL/Eurus-2-RL-Data}" \
+  --train-split "${EURUS_TRAIN_SPLIT:-train}" \
+  --val-split "${EURUS_VAL_SPLIT:-validation}" \
+  --train-output "${RAY_DATA_HOME}/eurus/eurus_code_train.parquet" \
+  --val-output "${RAY_DATA_HOME}/eurus/eurus_code_val.parquet"
 
 echo ""
 echo "[SUCCESS] Data preparation complete!"

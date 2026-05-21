@@ -23,6 +23,7 @@ Coding sub-reward env knobs:
   CODING_ENABLE_<NAME>=true/false and CODING_WEIGHT_<NAME>=float
   Names: UNIT_TEST_PASS_RATE, COMPILER_RUNTIME_FEEDBACK, STATIC_ANALYSIS_REWARD,
          EXECUTED_TOKEN_CREDIT, BLOCK_LEVEL_PROCESS_REWARD
+  EURUS_TRAIN_FILE/EURUS_VAL_FILE override the default Eurus-2-RL parquet files.
   -h, --help                Show this help message
 
 Examples:
@@ -394,7 +395,7 @@ SKIP_SANDBOX_HEALTHCHECK=${SKIP_SANDBOX_HEALTHCHECK:-0}
 ############################################
 # 1) Experiment config
 ############################################
-PROJECT_NAME=${PROJECT_NAME:-"deepcoder_grpo"}
+PROJECT_NAME=${PROJECT_NAME:-"eurus_grpo"}
 if [[ -n "${RUN_TAG}" ]]; then
   DEFAULT_EXP_NAME="grpo-${MODEL_TAG}-${REWARD_LABEL}-${KL_LABEL}-${RUN_TAG}-${RUN_INSTANCE_TAG}"
 else
@@ -508,12 +509,18 @@ HF_HOME=${HF_HOME:-"${RAY_DATA_HOME}/hf_cache"}
 export HF_HOME
 export HF_HUB_CACHE="${HF_HOME}"
 
+EURUS_DEFAULT_TRAIN_FILE="${RAY_DATA_HOME}/eurus/eurus_code_train.parquet"
+EURUS_DEFAULT_VAL_FILE="${RAY_DATA_HOME}/eurus/eurus_code_val.parquet"
 DEEPCODER_DEFAULT_TRAIN_FILE="${RAY_DATA_HOME}/math/deepcoder_full_train.parquet"
 DEEPCODER_DEFAULT_VAL_FILE="${RAY_DATA_HOME}/coding/code_eval_master.parquet"
 DEEPCODER_CLEAN_TRAIN_FILE="${RAY_DATA_HOME}/math/deepcoder_full_train_clean.parquet"
 DEEPCODER_CLEAN_VAL_FILE="${RAY_DATA_HOME}/coding/code_eval_master_clean.parquet"
 
-if [[ -n "${DEEPCODER_TRAIN_FILE:-}" ]]; then
+if [[ -n "${EURUS_TRAIN_FILE:-}" ]]; then
+  TRAIN_FILE="${EURUS_TRAIN_FILE}"
+elif [[ -f "${EURUS_DEFAULT_TRAIN_FILE}" ]]; then
+  TRAIN_FILE="${EURUS_DEFAULT_TRAIN_FILE}"
+elif [[ -n "${DEEPCODER_TRAIN_FILE:-}" ]]; then
   TRAIN_FILE="${DEEPCODER_TRAIN_FILE}"
 elif [[ -f "${DEEPCODER_CLEAN_TRAIN_FILE}" ]]; then
   TRAIN_FILE="${DEEPCODER_CLEAN_TRAIN_FILE}"
@@ -521,7 +528,11 @@ else
   TRAIN_FILE="${DEEPCODER_DEFAULT_TRAIN_FILE}"
 fi
 
-if [[ -n "${DEEPCODER_VAL_FILE:-}" ]]; then
+if [[ -n "${EURUS_VAL_FILE:-}" ]]; then
+  VAL_FILE="${EURUS_VAL_FILE}"
+elif [[ -f "${EURUS_DEFAULT_VAL_FILE}" ]]; then
+  VAL_FILE="${EURUS_DEFAULT_VAL_FILE}"
+elif [[ -n "${DEEPCODER_VAL_FILE:-}" ]]; then
   VAL_FILE="${DEEPCODER_VAL_FILE}"
 elif [[ -f "${DEEPCODER_CLEAN_VAL_FILE}" ]]; then
   VAL_FILE="${DEEPCODER_CLEAN_VAL_FILE}"

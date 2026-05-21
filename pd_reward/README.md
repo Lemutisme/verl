@@ -172,15 +172,36 @@ Metrics emitted include:
 ### Math / General
 
 ```bash
-bash run_grpo_math.sh -reward pdpo -dataset gsm8k -gpus 5
 bash run_grpo_math.sh -reward pdpo -dataset deepscalar -gpus 5
-bash run_grpo_math.sh -reward pdpo -dataset general365 -gpus 5
 ```
+
+DeepScaleR is the default math training dataset for current sweeps. Its eval file is:
+
+```text
+/shared/nas2/yujiz/rl/data/math/math_eval_deepscalar.parquet
+```
+
+That eval suite combines the existing math master eval with General365 test and OlympiadBench. Override with `DEEPSCALAR_VAL_FILE` when needed.
 
 ### Coding
 
 ```bash
 bash run_grpo.sh -reward pdpo -gpus 5
+```
+
+The coding launcher defaults to Eurus-2-RL prepared files:
+
+```text
+/shared/nas2/yujiz/rl/data/eurus/eurus_code_train.parquet
+/shared/nas2/yujiz/rl/data/eurus/eurus_code_val.parquet
+```
+
+Override with `EURUS_TRAIN_FILE` and `EURUS_VAL_FILE`. Legacy DeepCoder files remain a fallback when Eurus files are absent.
+
+Prepare the default data with:
+
+```bash
+bash data_preprocess/prepare_data.sh
 ```
 
 ### Multi-Experiment Runner
@@ -190,6 +211,8 @@ bash run_multiple_exp.sh -gpus 5 -reward pdpo
 ```
 
 `pdpo` is intentionally not added to the default matrix to avoid silently expanding long-running experiment sweeps.
+
+The multi-experiment runner currently sweeps math on DeepScaleR and code on Eurus.
 
 ## Recommended Defaults
 
@@ -215,7 +238,7 @@ MATH_WEIGHT_ANSWER_EXTRACTABILITY_REWARD=0.15
 
 ### Coding Subrewards
 
-The current coding defaults avoid the saturated/thought-action rewards and keep the more direct execution signals:
+The current Eurus coding defaults avoid the saturated/thought-action rewards and keep the more direct execution signals:
 
 ```bash
 DEEPCODER_ENABLE_THOUGHT=false
@@ -231,6 +254,8 @@ CODING_WEIGHT_STATIC_ANALYSIS_REWARD=0.0
 CODING_ENABLE_BLOCK_LEVEL_PROCESS_REWARD=false
 CODING_WEIGHT_BLOCK_LEVEL_PROCESS_REWARD=0.0
 ```
+
+The `DEEPCODER_*` names are legacy aliases for the shared coding executable reward path.
 
 ## Hyperparameters
 
@@ -290,6 +315,8 @@ pd_reward/
 ├── run_grpo_math.sh              # Math/general training launcher
 ├── run_grpo.sh                   # Coding training launcher
 ├── run_multiple_exp.sh           # Multi-experiment launcher
+├── data_preprocess/
+│   └── prepare_eurus_data.py      # Eurus-2-RL coding train/eval preparation
 ├── reward_score/
 │   ├── primal_dual_core.py       # Reward-level PD logic
 │   ├── pdar_core.py              # Shared group norm and sharpness damping helpers

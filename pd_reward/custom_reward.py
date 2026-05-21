@@ -47,6 +47,15 @@ MATH_DATA_SOURCES = {
 }
 
 
+CODING_DATA_SOURCES = {
+    "apps",
+    "code_contests",
+    "codecontests",
+    "codeforces",
+    "taco",
+}
+
+
 _COMBINER_CACHE = {}
 
 
@@ -229,6 +238,11 @@ def _math_answer_candidates(solution_str: str) -> list[str]:
             seen.add(cleaned)
             deduped.append(cleaned)
     return deduped
+
+
+def _is_coding_data_source(data_source: Any) -> bool:
+    source = str(data_source or "").strip().lower().replace("-", "_")
+    return source.startswith("deepcoder") or source.startswith("eurus") or source in CODING_DATA_SOURCES
 
 
 def _score_math_dapo_flexible(solution_str: str, ground_truth: str):
@@ -451,7 +465,7 @@ def compute_score(data_source, solution_str, ground_truth, extra_info=None, **kw
             )
             return infos[0] if infos else 0.0
             
-    elif data_source.startswith("deepcoder"):
+    elif _is_coding_data_source(data_source):
         sandbox_fusion_url = kwargs.get("sandbox_fusion_url", None)
         concurrent_semaphore = kwargs.get("concurrent_semaphore", None)
 

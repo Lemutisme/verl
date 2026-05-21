@@ -124,7 +124,7 @@ else
 fi
 
 # Datasets for run_grpo_math.sh
-MATH_DATASETS=("deepscalar" "general365" "gsm8k" )
+MATH_DATASETS=("deepscalar")
 
 # Paths to scripts
 MATH_SCRIPT="${DIR}/run_grpo_math.sh"
@@ -229,7 +229,7 @@ while true; do
 
             cleanup_ray_vllm "before task"
 
-            # Align with DeepCoder high-performance config
+            # Align with coding high-performance config
             export VLLM_GPU_UTIL=0.3
             export VLLM_MAX_NUM_SEQS=128
             export TRAIN_PROMPT_BSZ=4
@@ -250,10 +250,10 @@ while true; do
         done
     done
 
-    # --- Task 4: Code (DeepCoder) ---
+    # --- Task 4: Code (Eurus) ---
     echo ""
     echo "################################################################"
-    echo "# [Round ${ROUND}] BENCHMARK: deepcoder"
+    echo "# [Round ${ROUND}] BENCHMARK: eurus"
     echo "################################################################"
     echo ""
 
@@ -264,7 +264,7 @@ while true; do
 
         cleanup_ray_vllm "before task"
 
-        # Align with DeepCoder high-performance config
+        # Align with coding high-performance config
         export VLLM_GPU_UTIL=0.3
         export VLLM_MAX_NUM_SEQS=128
         export TRAIN_PROMPT_BSZ=4
@@ -273,13 +273,13 @@ while true; do
         export TRAIN_PROMPT_MINI_BSZ=4
         export OFFLOAD=false
 
-        TASK4_OUT="${EXP_LOG_DIR}/R${ROUND}_code_deepcoder_${REWARD}.stdout"
-        TASK4_ERR="${EXP_LOG_DIR}/R${ROUND}_code_deepcoder_${REWARD}.stderr"
-        echo "[RUN] Code: DeepCoder | Reward: ${REWARD}"
+        TASK4_OUT="${EXP_LOG_DIR}/R${ROUND}_code_eurus_${REWARD}.stdout"
+        TASK4_ERR="${EXP_LOG_DIR}/R${ROUND}_code_eurus_${REWARD}.stderr"
+        echo "[RUN] Code: Eurus | Reward: ${REWARD}"
         echo "      ➜  Stdout: ${TASK4_OUT}"
         echo "      ➜  Stderr: ${TASK4_ERR}"
         bash "${CODE_SCRIPT}" -reward "${REWARD}" -gpus "${GPUS}" -steps "${STEPS}" > >(tee "${TASK4_OUT}") 2> >(tee "${TASK4_ERR}" >&2)
-        log_failure $? "Code:DeepCoder:${REWARD}"
+        log_failure $? "Code:Eurus:${REWARD}"
         
         cleanup_ray_vllm "after task"
     done
