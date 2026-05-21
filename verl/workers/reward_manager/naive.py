@@ -77,6 +77,9 @@ class NaiveRewardManager(AbstractRewardManager):
             ground_truth = data_item.non_tensor_batch["reward_model"]["ground_truth"]
             data_source = data_item.non_tensor_batch[self.reward_fn_key]
             extra_info = data_item.non_tensor_batch.get("extra_info", {})
+            if not isinstance(extra_info, dict):
+                extra_info = {}
+            extra_info["prompt_str"] = prompt_str
             num_turns = data_item.non_tensor_batch.get("__num_turns__", None)
             rollout_reward_scores = data_item.non_tensor_batch.get("reward_scores", {})
             extra_info["num_turns"] = num_turns

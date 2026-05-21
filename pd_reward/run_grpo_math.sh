@@ -4,10 +4,10 @@ set -euo pipefail
 usage() {
   cat <<'EOF'
 Usage:
-  bash run_grpo_math.sh -reward {ori|new|pd|pdar} -dataset {gsm8k|deepscalar|general365|openr1|master} -model {qwen3-4b|qwen3-8b|deepseek7b|custom} [options]
+  bash run_grpo_math.sh -reward {ori|pdar-ori|new|pd|pdar} -dataset {gsm8k|deepscalar|general365|openr1|master} -model {qwen3-4b|qwen3-8b|deepseek7b|custom} [options]
 
 Options:
-  -reward, --reward         Reward preset: ori, new, pd, pdar (default: pd)
+  -reward, --reward         Reward preset: ori, pdar-ori, new, pd, pdar (default: pd)
   -dataset, --dataset       Dataset preset: gsm8k, deepscalar, general365, openr1, master (default: gsm8k)
   -model, --model           Model preset: qwen3-4b, qwen3-8b, deepseek-r1-1.5b, deepseek7b, custom
   -mode, --mode             Alias of -model
@@ -22,8 +22,12 @@ Options:
 
 Math/general sub-reward env knobs:
   MATH_ENABLE_SUB_REWARDS=true/false
+  MATH_SUBREWARD_PRESET=executable|legacy (default: executable)
   MATH_ENABLE_<NAME>=true/false and MATH_WEIGHT_<NAME>=float
-  Names: FINAL_ANSWER_REWARD, ANSWER_EFFICIENCY_REWARD, CONSISTENCY_REWARD
+  Legacy names: FINAL_ANSWER_REWARD, ANSWER_EFFICIENCY_REWARD, CONSISTENCY_REWARD
+  Executable names: EXECUTABLE_UNIT_PASS_RATE_REWARD, STEP_ARITHMETIC_VALIDITY_REWARD,
+    PREFIX_CONSISTENCY_REWARD, TRACE_EFFICIENCY_REWARD, ANSWER_EXTRACTABILITY_REWARD
+  MATH_EXECUTABLE_WRONG_CAP / NUMERIC_TOL / MAX_CLAIMS tune executable verification.
   MATH_EFFICIENCY_MIN_TOKENS / MAX_TOKENS / POST_ANSWER_MAX_TOKENS tune brevity.
   -h, --help                Show this help message
 EOF
@@ -167,6 +171,12 @@ case "${REWARD_KIND}" in
     COMBINE_MODE="none"
     MATH_ENABLE_SUB_REWARDS=${MATH_ENABLE_SUB_REWARDS:-false}
     ;;
+  pdar-ori|pdar_ori|ori-pdar|ori_pdar|pdar_original)
+    REWARD_LABEL="pdar-ori"
+    COMBINE_MODE="none"
+    ADV_ESTIMATOR="pdar"
+    MATH_ENABLE_SUB_REWARDS=${MATH_ENABLE_SUB_REWARDS:-false}
+    ;;
   new|new_reward)
     REWARD_LABEL="new"
     COMBINE_MODE="multiplier"
@@ -192,12 +202,51 @@ esac
 
 MATH_SIGNED_REWARD=${MATH_SIGNED_REWARD:-true}
 MATH_PERF_GATE=${MATH_PERF_GATE:--1.0}
-MATH_ENABLE_FINAL_ANSWER_REWARD=${MATH_ENABLE_FINAL_ANSWER_REWARD:-true}
-MATH_WEIGHT_FINAL_ANSWER_REWARD=${MATH_WEIGHT_FINAL_ANSWER_REWARD:-0.20}
-MATH_ENABLE_ANSWER_EFFICIENCY_REWARD=${MATH_ENABLE_ANSWER_EFFICIENCY_REWARD:-true}
-MATH_WEIGHT_ANSWER_EFFICIENCY_REWARD=${MATH_WEIGHT_ANSWER_EFFICIENCY_REWARD:-0.15}
-MATH_ENABLE_CONSISTENCY_REWARD=${MATH_ENABLE_CONSISTENCY_REWARD:-true}
-MATH_WEIGHT_CONSISTENCY_REWARD=${MATH_WEIGHT_CONSISTENCY_REWARD:-0.10}
+MATH_SUBREWARD_PRESET=$(lower "${MATH_SUBREWARD_PRESET:-executable}")
+case "${MATH_SUBREWARD_PRESET}" in
+  executable)
+    MATH_ENABLE_FINAL_ANSWER_REWARD=${MATH_ENABLE_FINAL_ANSWER_REWARD:-false}
+    MATH_ENABLE_ANSWER_EFFICIENCY_REWARD=${MATH_ENABLE_ANSWER_EFFICIENCY_REWARD:-false}
+    MATH_ENABLE_CONSISTENCY_REWARD=${MATH_ENABLE_CONSISTENCY_REWARD:-false}
+    MATH_ENABLE_EXECUTABLE_UNIT_PASS_RATE_REWARD=${MATH_ENABLE_EXECUTABLE_UNIT_PASS_RATE_REWARD:-false}
+    MATH_ENABLE_STEP_ARITHMETIC_VALIDITY_REWARD=${MATH_ENABLE_STEP_ARITHMETIC_VALIDITY_REWARD:-true}
+    MATH_ENABLE_PREFIX_CONSISTENCY_REWARD=${MATH_ENABLE_PREFIX_CONSISTENCY_REWARD:-true}
+    MATH_ENABLE_TRACE_EFFICIENCY_REWARD=${MATH_ENABLE_TRACE_EFFICIENCY_REWARD:-true}
+    MATH_ENABLE_ANSWER_EXTRACTABILITY_REWARD=${MATH_ENABLE_ANSWER_EXTRACTABILITY_REWARD:-true}
+    PDAR_LAMBDA_C_MAX_DEFAULT=0.5
+    PDAR_TAU_C_DEFAULT=0.30
+    ;;
+  legacy)
+    MATH_ENABLE_FINAL_ANSWER_REWARD=${MATH_ENABLE_FINAL_ANSWER_REWARD:-true}
+    MATH_ENABLE_ANSWER_EFFICIENCY_REWARD=${MATH_ENABLE_ANSWER_EFFICIENCY_REWARD:-true}
+    MATH_ENABLE_CONSISTENCY_REWARD=${MATH_ENABLE_CONSISTENCY_REWARD:-true}
+    MATH_ENABLE_EXECUTABLE_UNIT_PASS_RATE_REWARD=${MATH_ENABLE_EXECUTABLE_UNIT_PASS_RATE_REWARD:-false}
+    MATH_ENABLE_STEP_ARITHMETIC_VALIDITY_REWARD=${MATH_ENABLE_STEP_ARITHMETIC_VALIDITY_REWARD:-false}
+    MATH_ENABLE_PREFIX_CONSISTENCY_REWARD=${MATH_ENABLE_PREFIX_CONSISTENCY_REWARD:-false}
+    MATH_ENABLE_TRACE_EFFICIENCY_REWARD=${MATH_ENABLE_TRACE_EFFICIENCY_REWARD:-false}
+    MATH_ENABLE_ANSWER_EXTRACTABILITY_REWARD=${MATH_ENABLE_ANSWER_EXTRACTABILITY_REWARD:-false}
+    MATH_WEIGHT_FINAL_ANSWER_REWARD=${MATH_WEIGHT_FINAL_ANSWER_REWARD:-0.20}
+    MATH_WEIGHT_ANSWER_EFFICIENCY_REWARD=${MATH_WEIGHT_ANSWER_EFFICIENCY_REWARD:-0.15}
+    MATH_WEIGHT_CONSISTENCY_REWARD=${MATH_WEIGHT_CONSISTENCY_REWARD:-0.10}
+    PDAR_LAMBDA_C_MAX_DEFAULT=1.0
+    PDAR_TAU_C_DEFAULT=0.5
+    ;;
+  *)
+    echo "Unsupported math subreward preset: ${MATH_SUBREWARD_PRESET}" >&2
+    exit 1
+    ;;
+esac
+MATH_WEIGHT_FINAL_ANSWER_REWARD=${MATH_WEIGHT_FINAL_ANSWER_REWARD:-0.0}
+MATH_WEIGHT_ANSWER_EFFICIENCY_REWARD=${MATH_WEIGHT_ANSWER_EFFICIENCY_REWARD:-0.0}
+MATH_WEIGHT_CONSISTENCY_REWARD=${MATH_WEIGHT_CONSISTENCY_REWARD:-0.0}
+MATH_WEIGHT_EXECUTABLE_UNIT_PASS_RATE_REWARD=${MATH_WEIGHT_EXECUTABLE_UNIT_PASS_RATE_REWARD:-0.0}
+MATH_WEIGHT_STEP_ARITHMETIC_VALIDITY_REWARD=${MATH_WEIGHT_STEP_ARITHMETIC_VALIDITY_REWARD:-0.35}
+MATH_WEIGHT_PREFIX_CONSISTENCY_REWARD=${MATH_WEIGHT_PREFIX_CONSISTENCY_REWARD:-0.25}
+MATH_WEIGHT_TRACE_EFFICIENCY_REWARD=${MATH_WEIGHT_TRACE_EFFICIENCY_REWARD:-0.25}
+MATH_WEIGHT_ANSWER_EXTRACTABILITY_REWARD=${MATH_WEIGHT_ANSWER_EXTRACTABILITY_REWARD:-0.15}
+MATH_EXECUTABLE_WRONG_CAP=${MATH_EXECUTABLE_WRONG_CAP:-0.35}
+MATH_EXECUTABLE_NUMERIC_TOL=${MATH_EXECUTABLE_NUMERIC_TOL:-1e-6}
+MATH_EXECUTABLE_MAX_CLAIMS=${MATH_EXECUTABLE_MAX_CLAIMS:-32}
 MATH_EFFICIENCY_MIN_TOKENS=${MATH_EFFICIENCY_MIN_TOKENS:-16}
 case "${DATASET}" in
   general365)
@@ -334,6 +383,7 @@ fi
 echo "[INFO] DATASET=${DATASET}"
 echo "[INFO] REWARD_KIND=${REWARD_KIND}"
 echo "[INFO] MATH_ENABLE_SUB_REWARDS=${MATH_ENABLE_SUB_REWARDS}"
+echo "[INFO] MATH_SUBREWARD_PRESET=${MATH_SUBREWARD_PRESET}"
 echo "[INFO] MODEL_PRESET=${MODEL_PRESET}"
 echo "[INFO] MODEL_ID=${MODEL_ID}"
 echo "[INFO] KL_MODE=${KL_MODE}"
@@ -394,9 +444,9 @@ ADV_ESTIMATOR=${ADV_ESTIMATOR:-"grpo"}
 # PDAR hyperparameters (only used when ADV_ESTIMATOR=pdar)
 PDAR_ETA_C=${PDAR_ETA_C:-0.05}
 PDAR_ETA_S=${PDAR_ETA_S:-0.01}
-PDAR_LAMBDA_C_MAX=${PDAR_LAMBDA_C_MAX:-1.0}
+PDAR_LAMBDA_C_MAX=${PDAR_LAMBDA_C_MAX:-${PDAR_LAMBDA_C_MAX_DEFAULT:-1.0}}
 PDAR_LAMBDA_S_MAX=${PDAR_LAMBDA_S_MAX:-2.0}
-PDAR_TAU_C=${PDAR_TAU_C:-0.5}
+PDAR_TAU_C=${PDAR_TAU_C:-${PDAR_TAU_C_DEFAULT:-0.5}}
 PDAR_TAU_S=${PDAR_TAU_S:-1.5}
 PDAR_SIGN_C=${PDAR_SIGN_C:-1.0}
 PDAR_SHARPNESS_EMA_ALPHA=${PDAR_SHARPNESS_EMA_ALPHA:-0.1}
@@ -620,6 +670,19 @@ CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES} python3 -m verl.trainer.main_ppo \
   ++reward_model.reward_kwargs.math_weight_answer_efficiency_reward="${MATH_WEIGHT_ANSWER_EFFICIENCY_REWARD}" \
   ++reward_model.reward_kwargs.math_enable_consistency_reward="${MATH_ENABLE_CONSISTENCY_REWARD}" \
   ++reward_model.reward_kwargs.math_weight_consistency_reward="${MATH_WEIGHT_CONSISTENCY_REWARD}" \
+  ++reward_model.reward_kwargs.math_enable_executable_unit_pass_rate_reward="${MATH_ENABLE_EXECUTABLE_UNIT_PASS_RATE_REWARD}" \
+  ++reward_model.reward_kwargs.math_weight_executable_unit_pass_rate_reward="${MATH_WEIGHT_EXECUTABLE_UNIT_PASS_RATE_REWARD}" \
+  ++reward_model.reward_kwargs.math_enable_step_arithmetic_validity_reward="${MATH_ENABLE_STEP_ARITHMETIC_VALIDITY_REWARD}" \
+  ++reward_model.reward_kwargs.math_weight_step_arithmetic_validity_reward="${MATH_WEIGHT_STEP_ARITHMETIC_VALIDITY_REWARD}" \
+  ++reward_model.reward_kwargs.math_enable_prefix_consistency_reward="${MATH_ENABLE_PREFIX_CONSISTENCY_REWARD}" \
+  ++reward_model.reward_kwargs.math_weight_prefix_consistency_reward="${MATH_WEIGHT_PREFIX_CONSISTENCY_REWARD}" \
+  ++reward_model.reward_kwargs.math_enable_trace_efficiency_reward="${MATH_ENABLE_TRACE_EFFICIENCY_REWARD}" \
+  ++reward_model.reward_kwargs.math_weight_trace_efficiency_reward="${MATH_WEIGHT_TRACE_EFFICIENCY_REWARD}" \
+  ++reward_model.reward_kwargs.math_enable_answer_extractability_reward="${MATH_ENABLE_ANSWER_EXTRACTABILITY_REWARD}" \
+  ++reward_model.reward_kwargs.math_weight_answer_extractability_reward="${MATH_WEIGHT_ANSWER_EXTRACTABILITY_REWARD}" \
+  ++reward_model.reward_kwargs.math_executable_wrong_cap="${MATH_EXECUTABLE_WRONG_CAP}" \
+  ++reward_model.reward_kwargs.math_executable_numeric_tol="${MATH_EXECUTABLE_NUMERIC_TOL}" \
+  ++reward_model.reward_kwargs.math_executable_max_claims="${MATH_EXECUTABLE_MAX_CLAIMS}" \
   ++reward_model.reward_kwargs.math_efficiency_min_tokens="${MATH_EFFICIENCY_MIN_TOKENS}" \
   ++reward_model.reward_kwargs.math_efficiency_max_tokens="${MATH_EFFICIENCY_MAX_TOKENS}" \
   ++reward_model.reward_kwargs.math_efficiency_post_answer_max_tokens="${MATH_EFFICIENCY_POST_ANSWER_MAX_TOKENS}" \

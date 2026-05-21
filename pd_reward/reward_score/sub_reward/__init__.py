@@ -14,29 +14,39 @@ DEFAULT_ENABLED = {
     "coding": {
         "unit_test_pass_rate": False,
         "compiler_runtime_feedback": True,
-        "static_analysis_reward": True,
+        "static_analysis_reward": False,
         "executed_token_credit": True,
-        "block_level_process_reward": True,
+        "block_level_process_reward": False,
     },
     "math": {
         "final_answer_reward": False,  # Disabled: redundant with main accuracy reward in PD mode
-        "answer_efficiency_reward": True,
-        "consistency_reward": True,
+        "answer_efficiency_reward": False,
+        "consistency_reward": False,
+        "executable_unit_pass_rate_reward": False,
+        "step_arithmetic_validity_reward": True,
+        "prefix_consistency_reward": True,
+        "trace_efficiency_reward": True,
+        "answer_extractability_reward": True,
     },
 }
 
 DEFAULT_WEIGHTS = {
     "coding": {
         "unit_test_pass_rate": 0.0,
-        "compiler_runtime_feedback": 0.20,
-        "static_analysis_reward": 0.15,
-        "executed_token_credit": 0.10,
-        "block_level_process_reward": 0.10,
+        "compiler_runtime_feedback": 0.30,
+        "static_analysis_reward": 0.0,
+        "executed_token_credit": 0.20,
+        "block_level_process_reward": 0.0,
     },
     "math": {
-        "final_answer_reward": 0.20,
-        "answer_efficiency_reward": 0.15,
-        "consistency_reward": 0.10,
+        "final_answer_reward": 0.0,
+        "answer_efficiency_reward": 0.0,
+        "consistency_reward": 0.0,
+        "executable_unit_pass_rate_reward": 0.0,
+        "step_arithmetic_validity_reward": 0.35,
+        "prefix_consistency_reward": 0.25,
+        "trace_efficiency_reward": 0.25,
+        "answer_extractability_reward": 0.15,
     },
 }
 

@@ -1,29 +1,32 @@
 #!/usr/bin/env bash
 
 # run_multiple_exp.sh
-# Usage: bash run_multiple_exp.sh [-gpus xx] [-steps N] [-reward {pdar|pd|new|ori}]
+# Usage: bash run_multiple_exp.sh [-gpus xx] [-steps N] [-reward {pdar|pd|new|ori|pdar-ori}] [-save]
 
 # Default values
 GPUS=""
 STEPS="400"
 REWARD_FILTER=""
 CLEANUP_RAY_VLLM=false
+SAVE_MODEL=false
 DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 
 usage() {
   cat <<'EOF'
 Usage:
-  bash run_multiple_exp.sh [-gpus xx] [-steps N] [-reward {pdar|pd|new|ori}] [--cleanup-ray-vllm]
+  bash run_multiple_exp.sh [-gpus xx] [-steps N] [-reward {pdar|pd|new|ori|pdar-ori}] [-save] [--cleanup-ray-vllm]
 
 Options:
   -gpus, --gpus             GPU ids to pass to child runs, e.g. 0 or 0,1
   -steps, --steps           Total training steps for each child run (default: 400)
-  -reward, --reward         Run only one reward preset: pdar, pd, new, or ori
+  -reward, --reward         Run only one reward preset: pdar, pd, new, ori, or pdar-ori
+  -save, --save             Enable model checkpoint saving for child runs
   --cleanup-ray-vllm        Stop local Ray and kill vLLM before/after tasks
   -h, --help                Show this help message
 
 By default this script does not stop Ray or kill vLLM, so other multi-GPU jobs
-on the same host are not interrupted.
+on the same host are not interrupted. It also disables model checkpoint saving
+unless -save is passed.
 EOF
 }
 
@@ -53,6 +56,10 @@ while [[ $# -gt 0 ]]; do
       CLEANUP_RAY_VLLM=true
       shift
       ;;
+    -save|--save)
+      SAVE_MODEL=true
+      shift
+      ;;
     -h|--help)
       usage
       exit 0
@@ -72,6 +79,9 @@ if [ -n "$REWARD_FILTER" ]; then
         pdar|pd|new|ori)
             REWARDS=("$REWARD_FILTER")
             ;;
+        pdar-ori|pdar_ori|ori-pdar|ori_pdar|pdar_original)
+            REWARDS=("pdar-ori")
+            ;;
         *)
             echo "[ERROR] Unsupported reward preset: ${REWARD_FILTER}" >&2
             usage
@@ -81,6 +91,19 @@ if [ -n "$REWARD_FILTER" ]; then
 fi
 echo "[INFO] Reward preset(s): ${REWARDS[*]}"
 echo "[INFO] Ray/vLLM cleanup enabled: ${CLEANUP_RAY_VLLM}"
+
+MATH_SAVE_ARGS=()
+if [ "$SAVE_MODEL" = true ]; then
+    export SAVE_EVERY_STEPS="${SAVE_EVERY_STEPS:-5}"
+    export SAVE_BEST_CHECKPOINT="${SAVE_BEST_CHECKPOINT:-true}"
+else
+    export SAVE_EVERY_STEPS="-1"
+    export SAVE_BEST_CHECKPOINT="false"
+    MATH_SAVE_ARGS=(--save_freq -1)
+fi
+echo "[INFO] Model checkpoint saving enabled: ${SAVE_MODEL}"
+echo "[INFO] SAVE_EVERY_STEPS=${SAVE_EVERY_STEPS}"
+echo "[INFO] SAVE_BEST_CHECKPOINT=${SAVE_BEST_CHECKPOINT}"
 
 # 2. Automatic GPU Detection
 # If GPUS is not specified, find the GPU with the most free memory
@@ -217,7 +240,7 @@ while true; do
             echo "[RUN] Math/General: ${DATASET} | Reward: ${REWARD}"
             echo "      ➜  Stdout: ${TASK_OUT}"
             echo "      ➜  Stderr: ${TASK_ERR}"
-            bash "${MATH_SCRIPT}" -reward "${REWARD}" -dataset "${DATASET}" -gpus "${GPUS}" -steps "${STEPS}" > >(tee "${TASK_OUT}") 2> >(tee "${TASK_ERR}" >&2)
+            bash "${MATH_SCRIPT}" -reward "${REWARD}" -dataset "${DATASET}" -gpus "${GPUS}" -steps "${STEPS}" "${MATH_SAVE_ARGS[@]}" > >(tee "${TASK_OUT}") 2> >(tee "${TASK_ERR}" >&2)
             log_failure $? "Math:${DATASET}:${REWARD}"
             
             cleanup_ray_vllm "after task"

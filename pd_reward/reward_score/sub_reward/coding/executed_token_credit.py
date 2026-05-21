@@ -13,6 +13,4 @@ def compute(ctx: dict[str, Any], **_: Any) -> float:
     if total <= 0:
         return 0.0
 
-    non_comment = [line for line in total_lines if not line.lstrip().startswith("#")]
-    density = len(non_comment) / float(len(total_lines) or 1)
-    return 0.5 * (passed / float(total)) + 0.5 * density
+    return max(0.0, min(1.0, passed / float(total)))

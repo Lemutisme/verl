@@ -101,24 +101,55 @@ def _weighted_subreward_average(subrewards: dict[str, float], kwargs: dict[str, 
     return weighted_sum / weight_sum
 
 
+def _flatten_subrewards(info: dict[str, Any], subrewards: dict[str, float]) -> dict[str, Any]:
+    for name, value in subrewards.items():
+        info[name] = float(value)
+    return info
+
+
 def _pdar_reward_info(
     main_reward: float,
     subrewards: dict[str, float],
     kwargs: dict[str, Any],
     *,
     signed: bool = False,
+    acc: bool | None = None,
+    extra_metrics: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     main = float(main_reward)
     if signed:
         main = 1.0 if main > 0.0 else -1.0
-    return {
+    info = {
         "score": main,
         "main_reward": main,
         "aux_reward_combined": _weighted_subreward_average(subrewards, kwargs),
         "aux_rewards": subrewards,
-        "acc": bool(main_reward > 0.0),
+        "acc": bool(main_reward > 0.0) if acc is None else bool(acc),
         "original_reward": float(main_reward),
     }
+    if extra_metrics:
+        info.update(extra_metrics)
+    return _flatten_subrewards(info, subrewards)
+
+
+def _coding_pdar_reward_info(
+    main_reward: float,
+    subrewards: dict[str, float],
+    kwargs: dict[str, Any],
+) -> dict[str, Any]:
+    partial_pass_rate = max(0.0, min(1.0, float(main_reward)))
+    strict_threshold = _to_float(kwargs.get("coding_strict_acc_threshold"), 1.0)
+    return _pdar_reward_info(
+        main_reward,
+        subrewards,
+        kwargs,
+        signed=False,
+        acc=partial_pass_rate >= strict_threshold,
+        extra_metrics={
+            "partial_pass_rate": partial_pass_rate,
+            "any_pass": partial_pass_rate > 0.0,
+        },
+    )
 
 
 def _get_combiner(kwargs: dict[str, Any]) -> GenericRewardCombiner:
@@ -194,6 +225,7 @@ def _score_math(data_source, solution_str, ground_truth, extra_info=None, **kwar
             subrewards,
             kwargs,
             signed=to_bool(kwargs.get("math_signed_reward", True), True),
+            acc=base_acc,
         )
         info["base_math_score"] = float(base_score)
         info["original_reward"] = float(base_score)
@@ -220,6 +252,7 @@ def _score_math(data_source, solution_str, ground_truth, extra_info=None, **kwar
     info["base_math_score"] = float(base_score)
     info["original_reward"] = float(base_score)
     info["acc"] = bool(base_acc)
+    _flatten_subrewards(info, subrewards)
     if isinstance(base_res, dict) and "pred" in base_res:
         info["pred"] = base_res["pred"]
     return info
@@ -245,10 +278,10 @@ def compute_score(data_source, solution_str, ground_truth, extra_info=None, **kw
         if combine_mode == "pdar":
             if isinstance(res, list):
                 return [
-                    _pdar_reward_info(r["main_reward"], r["subrewards"], kwargs, signed=False)
+                    _coding_pdar_reward_info(r["main_reward"], r["subrewards"], kwargs)
                     for r in res
                 ]
-            return _pdar_reward_info(res["main_reward"], res["subrewards"], kwargs, signed=False)
+            return _coding_pdar_reward_info(res["main_reward"], res["subrewards"], kwargs)
 
         if isinstance(res, list):
             main_rewards = [r["main_reward"] for r in res]
@@ -289,10 +322,10 @@ def compute_score(data_source, solution_str, ground_truth, extra_info=None, **kw
         if combine_mode == "pdar":
             if isinstance(res, list):
                 return [
-                    _pdar_reward_info(r["main_reward"], r["subrewards"], kwargs, signed=False)
+                    _coding_pdar_reward_info(r["main_reward"], r["subrewards"], kwargs)
                     for r in res
                 ]
-            return _pdar_reward_info(res["main_reward"], res["subrewards"], kwargs, signed=False)
+            return _coding_pdar_reward_info(res["main_reward"], res["subrewards"], kwargs)
 
         if isinstance(res, list):
             main_rewards = [r["main_reward"] for r in res]
