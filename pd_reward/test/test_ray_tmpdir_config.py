@@ -19,5 +19,5 @@ def _ray_tmpdir_default(script_name: str) -> str:
 
 
 def test_ray_tmpdir_default_is_scoped_to_each_run():
-    for script_name in ("run_grpo_math.sh", "run_grpo.sh"):
+    for script_name in ("train_math.sh", "train_code.sh"):
         assert _ray_tmpdir_default(script_name) == "${RAY_TMP_ROOT}/${RAY_TMP_TAG}"

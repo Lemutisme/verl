@@ -125,7 +125,8 @@ def test_trace_efficiency_penalizes_long_outputs_before_wrong_cap():
     assert long_score < 0.30
 
 
-def test_custom_reward_pdpo_smoke_returns_flattened_executable_metrics():
+@pytest.mark.parametrize("combine_mode", ["pdpo", "gdpo"])
+def test_custom_reward_advantage_aux_smoke_returns_flattened_executable_metrics(combine_mode):
     gold = (
         "Natalia sold 48/2 = <<48/2=24>>24 clips in May.\n"
         "Natalia sold 48+24 = <<48+24=72>>72 clips altogether.\n"
@@ -138,7 +139,7 @@ def test_custom_reward_pdpo_smoke_returns_flattened_executable_metrics():
         response,
         "72",
         extra_info={"answer": gold, "question": "How many clips?"},
-        combine_mode="pdpo",
+        combine_mode=combine_mode,
         math_enable_sub_rewards=True,
         math_enable_final_answer_reward=False,
         math_enable_answer_efficiency_reward=False,

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 # run_multiple_exp.sh
-# Usage: bash run_multiple_exp.sh [-gpus xx] [-steps N] [-reward {pdpo|new|ori}] [-save]
+# Usage: bash run_multiple_exp.sh [-gpus xx] [-steps N] [-reward {pdpo|gdpo|new|ori}] [-save]
 
 # Default values
 GPUS=""
@@ -14,12 +14,12 @@ DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 usage() {
   cat <<'EOF'
 Usage:
-  bash run_multiple_exp.sh [-gpus xx] [-steps N] [-reward {pdpo|new|ori}] [-save] [--cleanup-ray-vllm]
+  bash run_multiple_exp.sh [-gpus xx] [-steps N] [-reward {pdpo|gdpo|new|ori}] [-save] [--cleanup-ray-vllm]
 
 Options:
   -gpus, --gpus             GPU ids to pass to child runs, e.g. 0 or 0,1
   -steps, --steps           Total training steps for each child run (default: 400)
-  -reward, --reward         Run only one reward preset: pdpo, new, or ori
+  -reward, --reward         Run only one reward preset: pdpo, gdpo, new, or ori
   -save, --save             Enable model checkpoint saving for child runs
   --cleanup-ray-vllm        Stop local Ray and kill vLLM before/after tasks
   -h, --help                Show this help message
@@ -73,11 +73,14 @@ while [[ $# -gt 0 ]]; do
 done
 
 # 1. Experiment Matrix
-REWARDS=("pdpo" "new" "ori")
+REWARDS=("pdpo" "gdpo" "new" "ori")
 if [ -n "$REWARD_FILTER" ]; then
     case "$REWARD_FILTER" in
         pdpo|pdpo_reward)
             REWARDS=("pdpo")
+            ;;
+        gdpo|gdpo_reward)
+            REWARDS=("gdpo")
             ;;
         new|ori)
             REWARDS=("$REWARD_FILTER")
@@ -120,12 +123,12 @@ else
     echo "[INFO] Using user-specified GPU(s): $GPUS"
 fi
 
-# Datasets for run_grpo_math.sh
+# Datasets for train_math.sh
 MATH_DATASETS=("deepscalar")
 
 # Paths to scripts
-MATH_SCRIPT="${DIR}/run_grpo_math.sh"
-CODE_SCRIPT="${DIR}/run_grpo.sh"
+MATH_SCRIPT="${DIR}/train_math.sh"
+CODE_SCRIPT="${DIR}/train_code.sh"
 
 # 2.1) Helper: Log failure and continue (replaces occupy_card_on_failure)
 FAILED_TASKS=()
@@ -185,7 +188,7 @@ except Exception as e:
 # Thus we must comment it out or set it to false:
 # export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"
 export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:False"
-# Child runs inherit these defaults, and run_grpo_math.sh also passes the matching
+# Child runs inherit these defaults, and train_math.sh also passes the matching
 # vLLM Hydra override. Keep them enabled for colocated actor/ref/vLLM jobs:
 # without them, step0 checkpoint -> vLLM sleep-mode wake-up can fail with
 # "CUDA Error: out of memory at cumem_allocator.cpp:62".

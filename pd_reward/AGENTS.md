@@ -2,7 +2,7 @@
 
 ## Project Structure & Module Organization
 
-This directory contains PDPO reward and advantage experiments within the larger `verl` repository. Core entry points live at the top level: `custom_reward.py`, `pdpo_advantage.py`, and `pdpo_init.py`. Reward implementations and shared helpers live in `reward_score/`, with subreward utilities under `reward_score/sub_reward/`. Dataset preparation scripts are in `data_preprocess/`. Experiment launchers are shell scripts such as `run_grpo.sh`, `run_grpo_math.sh`, and `run_multiple_exp.sh`. Unit tests live in `test/` as `test_*.py`. Generated outputs such as `logs_*` are ignored and should not be committed.
+This directory contains PDPO reward and advantage experiments within the larger `verl` repository. Core entry points live at the top level: `custom_reward.py`, `pdpo_advantage.py`, and `pdpo_init.py`. Reward implementations and shared helpers live in `reward_score/`, with subreward utilities under `reward_score/sub_reward/`. Dataset preparation scripts are in `data_preprocess/`. Experiment launchers are shell scripts such as `train_math.sh`, `train_code.sh`, and `run_multiple_exp.sh`. Unit tests live in `test/` as `test_*.py`. Generated outputs such as `logs_*` are ignored and should not be committed.
 
 ## Build, Test, and Development Commands
 
@@ -12,7 +12,7 @@ Use the root repository Python environment setup from `../AGENTS.md`. Common loc
 pytest -q
 pytest -q test/test_pdpo_advantage.py
 python -m compileall -q .
-bash run_grpo_math.sh -reward pdpo -dataset gsm8k -gpus 5
+bash train_math.sh -reward pdpo -dataset gsm8k -gpus 5
 bash run_multiple_exp.sh -gpus 5 -reward pdpo
 ```
 

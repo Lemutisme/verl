@@ -4,11 +4,10 @@ set -euo pipefail
 usage() {
   cat <<'EOF'
 Usage:
-  bash run_grpo_math.sh -reward {ori|new|pdpo} -dataset {gsm8k|deepscalar|general365|openr1|master} -model {qwen3-4b|qwen3-8b|deepseek7b|custom} [options]
+  bash train_code.sh -reward {ori|new|pdpo|gdpo} -model {qwen3-4b|qwen3-8b|deepseek7b|custom} [options]
 
 Options:
-  -reward, --reward         Reward preset: ori, new, pdpo (default: pdpo)
-  -dataset, --dataset       Dataset preset: gsm8k, deepscalar, general365, openr1, master (default: gsm8k)
+  -reward, --reward         Reward preset: ori, new, pdpo, gdpo
   -model, --model           Model preset: qwen3-4b, qwen3-8b, deepseek-r1-1.5b, deepseek7b, custom
   -mode, --mode             Alias of -model
   -kl, --kl                 KL mode: loss, reward, none
@@ -20,21 +19,41 @@ Options:
   --save_freq               Set checkpoint saving frequency (e.g. -1 to disable)
   -steps, --steps           Total training steps (default: 1000)
 
-Math/general sub-reward env knobs:
-  MATH_ENABLE_SUB_REWARDS=true/false
-  MATH_SUBREWARD_PRESET=executable|legacy (default: executable)
-  MATH_ENABLE_<NAME>=true/false and MATH_WEIGHT_<NAME>=float
-  Legacy names: FINAL_ANSWER_REWARD, ANSWER_EFFICIENCY_REWARD, CONSISTENCY_REWARD
-  Executable names: EXECUTABLE_UNIT_PASS_RATE_REWARD, STEP_ARITHMETIC_VALIDITY_REWARD,
-    PREFIX_CONSISTENCY_REWARD, TRACE_EFFICIENCY_REWARD, ANSWER_EXTRACTABILITY_REWARD
-  MATH_EXECUTABLE_WRONG_CAP / NUMERIC_TOL / MAX_CLAIMS tune executable verification.
-  MATH_EFFICIENCY_MIN_TOKENS / MAX_TOKENS / POST_ANSWER_MAX_TOKENS tune brevity.
+Coding sub-reward env knobs:
+  CODING_ENABLE_SUB_REWARDS=true/false
+  CODING_ENABLE_<NAME>=true/false and CODING_WEIGHT_<NAME>=float
+  Names: CODE_EXTRACTABILITY_REWARD, SYNTAX_VALIDITY_REWARD, UNIT_TEST_PASS_RATE,
+         COMPILER_RUNTIME_FEEDBACK, STATIC_ANALYSIS_REWARD, EXECUTED_TOKEN_CREDIT,
+         BLOCK_LEVEL_PROCESS_REWARD
+  EURUS_TRAIN_FILE/EURUS_VAL_FILE override the default Eurus-2-RL parquet files.
   -h, --help                Show this help message
+
+Examples:
+  bash train_code.sh -reward ori -model qwen3-4b
+  bash train_code.sh -reward new -model qwen3-8b -kl none -gpus 2,3 -name ablation_a
+  bash train_code.sh -reward pdpo -model deepseek7b -kl reward -kl-coef 0.001
+  bash train_code.sh -reward gdpo -model custom -model-id Qwen/Qwen3-30B-A3B-Instruct-2507
 EOF
 }
 
 lower() {
   printf '%s' "$1" | tr '[:upper:]' '[:lower:]'
+}
+
+is_truthy() {
+  case "$(lower "$1")" in
+    1|true|yes|y|on)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+bracket_csv() {
+  local IFS=,
+  printf '[%s]' "$*"
 }
 
 sanitize_token() {
@@ -43,7 +62,6 @@ sanitize_token() {
     | sed -E 's#[^a-z0-9._-]+#-#g; s#-+#-#g; s#(^-|-$)##g'
 }
 
-DATASET=${DATASET:-"gsm8k"}
 REWARD_KIND=${REWARD_KIND:-"pdpo"}
 MODEL_PRESET=${MODEL_PRESET:-${MODEL_MODE:-"qwen3-4b"}}
 KL_MODE=${KL_MODE:-"loss"}
@@ -60,11 +78,6 @@ while [[ $# -gt 0 ]]; do
     -reward|--reward)
       [[ $# -ge 2 ]] || { echo "Missing value for $1" >&2; usage; exit 1; }
       REWARD_KIND="$2"
-      shift 2
-      ;;
-    -dataset|--dataset)
-      [[ $# -ge 2 ]] || { echo "Missing value for $1" >&2; usage; exit 1; }
-      DATASET="$2"
       shift 2
       ;;
     -model|--model|-mode|--mode)
@@ -137,50 +150,40 @@ source "${CONDA_SH}"
 conda activate verl
 set -u
 
-DATASET=$(lower "${DATASET}")
+REWARD_KIND=$(lower "${REWARD_KIND}")
 MODEL_PRESET=$(lower "${MODEL_PRESET}")
 KL_MODE=$(lower "${KL_MODE}")
 
-case "${DATASET}" in
-  gsm8k)
-    DATASET_LABEL="gsm8k"
-    ;;
-  deepscalar)
-    DATASET_LABEL="deepscalar"
-    ;;
-  general365)
-    DATASET_LABEL="general365"
-    ;;
-  openr1)
-    DATASET_LABEL="openr1"
-    ;;
-  master)
-    DATASET_LABEL="master"
-    ;;
-  *)
-    echo "Unsupported dataset: ${DATASET}" >&2
-    usage
-    exit 1
-    ;;
-esac
-
-REWARD_KIND=$(lower "${REWARD_KIND}")
 case "${REWARD_KIND}" in
-  ori|original|none)
+  ori|original)
+    RUN_VARIANT="ori"
     REWARD_LABEL="ori"
+    REWARD_DEFAULT_GPU=0
     COMBINE_MODE="none"
-    MATH_ENABLE_SUB_REWARDS=${MATH_ENABLE_SUB_REWARDS:-false}
+    CODING_ENABLE_SUB_REWARDS=${CODING_ENABLE_SUB_REWARDS:-false}
     ;;
   new|new_reward)
+    RUN_VARIANT="new_reward"
     REWARD_LABEL="new"
+    REWARD_DEFAULT_GPU=1
     COMBINE_MODE="multiplier"
-    MATH_ENABLE_SUB_REWARDS=${MATH_ENABLE_SUB_REWARDS:-true}
+    CODING_ENABLE_SUB_REWARDS=${CODING_ENABLE_SUB_REWARDS:-true}
     ;;
   pdpo|pdpo_reward)
+    RUN_VARIANT="pdpo_reward"
     REWARD_LABEL="pdpo"
+    REWARD_DEFAULT_GPU=2
     COMBINE_MODE="pdpo"
     ADV_ESTIMATOR="pdpo"
-    MATH_ENABLE_SUB_REWARDS=${MATH_ENABLE_SUB_REWARDS:-true}
+    CODING_ENABLE_SUB_REWARDS=${CODING_ENABLE_SUB_REWARDS:-true}
+    ;;
+  gdpo|gdpo_reward)
+    RUN_VARIANT="gdpo_reward"
+    REWARD_LABEL="gdpo"
+    REWARD_DEFAULT_GPU=3
+    COMBINE_MODE="gdpo"
+    ADV_ESTIMATOR="gdpo"
+    CODING_ENABLE_SUB_REWARDS=${CODING_ENABLE_SUB_REWARDS:-true}
     ;;
   *)
     echo "Unsupported reward preset: ${REWARD_KIND}" >&2
@@ -189,62 +192,64 @@ case "${REWARD_KIND}" in
     ;;
 esac
 
-MATH_SIGNED_REWARD=${MATH_SIGNED_REWARD:-true}
-MATH_PERF_GATE=${MATH_PERF_GATE:--1.0}
-MATH_SUBREWARD_PRESET=$(lower "${MATH_SUBREWARD_PRESET:-executable}")
-case "${MATH_SUBREWARD_PRESET}" in
-  executable)
-    MATH_ENABLE_FINAL_ANSWER_REWARD=${MATH_ENABLE_FINAL_ANSWER_REWARD:-false}
-    MATH_ENABLE_ANSWER_EFFICIENCY_REWARD=${MATH_ENABLE_ANSWER_EFFICIENCY_REWARD:-false}
-    MATH_ENABLE_CONSISTENCY_REWARD=${MATH_ENABLE_CONSISTENCY_REWARD:-false}
-    MATH_ENABLE_EXECUTABLE_UNIT_PASS_RATE_REWARD=${MATH_ENABLE_EXECUTABLE_UNIT_PASS_RATE_REWARD:-false}
-    MATH_ENABLE_STEP_ARITHMETIC_VALIDITY_REWARD=${MATH_ENABLE_STEP_ARITHMETIC_VALIDITY_REWARD:-true}
-    MATH_ENABLE_PREFIX_CONSISTENCY_REWARD=${MATH_ENABLE_PREFIX_CONSISTENCY_REWARD:-true}
-    MATH_ENABLE_TRACE_EFFICIENCY_REWARD=${MATH_ENABLE_TRACE_EFFICIENCY_REWARD:-true}
-    MATH_ENABLE_ANSWER_EXTRACTABILITY_REWARD=${MATH_ENABLE_ANSWER_EXTRACTABILITY_REWARD:-true}
-    ;;
-  legacy)
-    MATH_ENABLE_FINAL_ANSWER_REWARD=${MATH_ENABLE_FINAL_ANSWER_REWARD:-true}
-    MATH_ENABLE_ANSWER_EFFICIENCY_REWARD=${MATH_ENABLE_ANSWER_EFFICIENCY_REWARD:-true}
-    MATH_ENABLE_CONSISTENCY_REWARD=${MATH_ENABLE_CONSISTENCY_REWARD:-true}
-    MATH_ENABLE_EXECUTABLE_UNIT_PASS_RATE_REWARD=${MATH_ENABLE_EXECUTABLE_UNIT_PASS_RATE_REWARD:-false}
-    MATH_ENABLE_STEP_ARITHMETIC_VALIDITY_REWARD=${MATH_ENABLE_STEP_ARITHMETIC_VALIDITY_REWARD:-false}
-    MATH_ENABLE_PREFIX_CONSISTENCY_REWARD=${MATH_ENABLE_PREFIX_CONSISTENCY_REWARD:-false}
-    MATH_ENABLE_TRACE_EFFICIENCY_REWARD=${MATH_ENABLE_TRACE_EFFICIENCY_REWARD:-false}
-    MATH_ENABLE_ANSWER_EXTRACTABILITY_REWARD=${MATH_ENABLE_ANSWER_EXTRACTABILITY_REWARD:-false}
-    MATH_WEIGHT_FINAL_ANSWER_REWARD=${MATH_WEIGHT_FINAL_ANSWER_REWARD:-0.20}
-    MATH_WEIGHT_ANSWER_EFFICIENCY_REWARD=${MATH_WEIGHT_ANSWER_EFFICIENCY_REWARD:-0.15}
-    MATH_WEIGHT_CONSISTENCY_REWARD=${MATH_WEIGHT_CONSISTENCY_REWARD:-0.10}
-    ;;
-  *)
-    echo "Unsupported math subreward preset: ${MATH_SUBREWARD_PRESET}" >&2
-    exit 1
-    ;;
-esac
-MATH_WEIGHT_FINAL_ANSWER_REWARD=${MATH_WEIGHT_FINAL_ANSWER_REWARD:-0.0}
-MATH_WEIGHT_ANSWER_EFFICIENCY_REWARD=${MATH_WEIGHT_ANSWER_EFFICIENCY_REWARD:-0.0}
-MATH_WEIGHT_CONSISTENCY_REWARD=${MATH_WEIGHT_CONSISTENCY_REWARD:-0.0}
-MATH_WEIGHT_EXECUTABLE_UNIT_PASS_RATE_REWARD=${MATH_WEIGHT_EXECUTABLE_UNIT_PASS_RATE_REWARD:-0.0}
-MATH_WEIGHT_STEP_ARITHMETIC_VALIDITY_REWARD=${MATH_WEIGHT_STEP_ARITHMETIC_VALIDITY_REWARD:-0.35}
-MATH_WEIGHT_PREFIX_CONSISTENCY_REWARD=${MATH_WEIGHT_PREFIX_CONSISTENCY_REWARD:-0.15}
-MATH_WEIGHT_TRACE_EFFICIENCY_REWARD=${MATH_WEIGHT_TRACE_EFFICIENCY_REWARD:-0.35}
-MATH_WEIGHT_ANSWER_EXTRACTABILITY_REWARD=${MATH_WEIGHT_ANSWER_EXTRACTABILITY_REWARD:-0.15}
-MATH_EXECUTABLE_WRONG_CAP=${MATH_EXECUTABLE_WRONG_CAP:-0.35}
-MATH_EXECUTABLE_NUMERIC_TOL=${MATH_EXECUTABLE_NUMERIC_TOL:-1e-6}
-MATH_EXECUTABLE_MAX_CLAIMS=${MATH_EXECUTABLE_MAX_CLAIMS:-32}
-MATH_EFFICIENCY_MIN_TOKENS=${MATH_EFFICIENCY_MIN_TOKENS:-16}
-case "${DATASET}" in
-  general365)
-    MATH_EFFICIENCY_MAX_TOKENS=${MATH_EFFICIENCY_MAX_TOKENS:-320}
-    ;;
-  deepscalar)
-    MATH_EFFICIENCY_MAX_TOKENS=${MATH_EFFICIENCY_MAX_TOKENS:-512}
-    ;;
-  *)
-    MATH_EFFICIENCY_MAX_TOKENS=${MATH_EFFICIENCY_MAX_TOKENS:-384}
-    ;;
-esac
-MATH_EFFICIENCY_POST_ANSWER_MAX_TOKENS=${MATH_EFFICIENCY_POST_ANSWER_MAX_TOKENS:-24}
+CODING_PERF_GATE=${CODING_PERF_GATE:--1.0}
+CODING_ENABLE_CODE_EXTRACTABILITY_REWARD=${CODING_ENABLE_CODE_EXTRACTABILITY_REWARD:-true}
+CODING_WEIGHT_CODE_EXTRACTABILITY_REWARD=${CODING_WEIGHT_CODE_EXTRACTABILITY_REWARD:-0.15}
+CODING_ENABLE_SYNTAX_VALIDITY_REWARD=${CODING_ENABLE_SYNTAX_VALIDITY_REWARD:-true}
+CODING_WEIGHT_SYNTAX_VALIDITY_REWARD=${CODING_WEIGHT_SYNTAX_VALIDITY_REWARD:-0.25}
+CODING_ENABLE_UNIT_TEST_PASS_RATE=${CODING_ENABLE_UNIT_TEST_PASS_RATE:-false}
+CODING_WEIGHT_UNIT_TEST_PASS_RATE=${CODING_WEIGHT_UNIT_TEST_PASS_RATE:-0.0}
+CODING_ENABLE_COMPILER_RUNTIME_FEEDBACK=${CODING_ENABLE_COMPILER_RUNTIME_FEEDBACK:-true}
+CODING_WEIGHT_COMPILER_RUNTIME_FEEDBACK=${CODING_WEIGHT_COMPILER_RUNTIME_FEEDBACK:-0.30}
+CODING_ENABLE_STATIC_ANALYSIS_REWARD=${CODING_ENABLE_STATIC_ANALYSIS_REWARD:-false}
+CODING_WEIGHT_STATIC_ANALYSIS_REWARD=${CODING_WEIGHT_STATIC_ANALYSIS_REWARD:-0.0}
+CODING_ENABLE_EXECUTED_TOKEN_CREDIT=${CODING_ENABLE_EXECUTED_TOKEN_CREDIT:-false}
+CODING_WEIGHT_EXECUTED_TOKEN_CREDIT=${CODING_WEIGHT_EXECUTED_TOKEN_CREDIT:-0.0}
+CODING_ENABLE_BLOCK_LEVEL_PROCESS_REWARD=${CODING_ENABLE_BLOCK_LEVEL_PROCESS_REWARD:-false}
+CODING_WEIGHT_BLOCK_LEVEL_PROCESS_REWARD=${CODING_WEIGHT_BLOCK_LEVEL_PROCESS_REWARD:-0.0}
+
+GDPO_ARGS=()
+if [[ "${ADV_ESTIMATOR:-grpo}" == "gdpo" ]]; then
+  GDPO_MAIN_WEIGHT=${GDPO_MAIN_WEIGHT:-1.0}
+  if [[ -z "${GDPO_REWARD_KEYS:-}" ]]; then
+    gdpo_keys=("main_reward")
+    gdpo_weights=("${GDPO_MAIN_WEIGHT}")
+    if is_truthy "${CODING_ENABLE_CODE_EXTRACTABILITY_REWARD}"; then
+      gdpo_keys+=("coding_code_extractability_reward")
+      gdpo_weights+=("${CODING_WEIGHT_CODE_EXTRACTABILITY_REWARD}")
+    fi
+    if is_truthy "${CODING_ENABLE_SYNTAX_VALIDITY_REWARD}"; then
+      gdpo_keys+=("coding_syntax_validity_reward")
+      gdpo_weights+=("${CODING_WEIGHT_SYNTAX_VALIDITY_REWARD}")
+    fi
+    if is_truthy "${CODING_ENABLE_UNIT_TEST_PASS_RATE}"; then
+      gdpo_keys+=("coding_unit_test_pass_rate")
+      gdpo_weights+=("${CODING_WEIGHT_UNIT_TEST_PASS_RATE}")
+    fi
+    if is_truthy "${CODING_ENABLE_COMPILER_RUNTIME_FEEDBACK}"; then
+      gdpo_keys+=("coding_compiler_runtime_feedback")
+      gdpo_weights+=("${CODING_WEIGHT_COMPILER_RUNTIME_FEEDBACK}")
+    fi
+    if is_truthy "${CODING_ENABLE_STATIC_ANALYSIS_REWARD}"; then
+      gdpo_keys+=("coding_static_analysis_reward")
+      gdpo_weights+=("${CODING_WEIGHT_STATIC_ANALYSIS_REWARD}")
+    fi
+    if is_truthy "${CODING_ENABLE_EXECUTED_TOKEN_CREDIT}"; then
+      gdpo_keys+=("coding_executed_token_credit")
+      gdpo_weights+=("${CODING_WEIGHT_EXECUTED_TOKEN_CREDIT}")
+    fi
+    if is_truthy "${CODING_ENABLE_BLOCK_LEVEL_PROCESS_REWARD}"; then
+      gdpo_keys+=("coding_block_level_process_reward")
+      gdpo_weights+=("${CODING_WEIGHT_BLOCK_LEVEL_PROCESS_REWARD}")
+    fi
+    GDPO_REWARD_KEYS=$(bracket_csv "${gdpo_keys[@]}")
+    GDPO_REWARD_WEIGHTS=$(bracket_csv "${gdpo_weights[@]}")
+  fi
+  GDPO_ARGS+=("++algorithm.gdpo_reward_keys=${GDPO_REWARD_KEYS}")
+  if [[ -n "${GDPO_REWARD_WEIGHTS:-}" ]]; then
+    GDPO_ARGS+=("++algorithm.gdpo_reward_weights=${GDPO_REWARD_WEIGHTS}")
+  fi
+fi
 
 case "${KL_MODE}" in
   none|off|false|no)
@@ -356,19 +361,23 @@ fi
 ############################################
 # 0) GPU pinning (set BEFORE Ray)
 ############################################
-DEFAULT_CUDA_VISIBLE_DEVICES=${DEFAULT_CUDA_VISIBLE_DEVICES:-"0"}
+DEFAULT_CUDA_VISIBLE_DEVICES=${DEFAULT_CUDA_VISIBLE_DEVICES:-${REWARD_DEFAULT_GPU}}
 CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-${DEFAULT_CUDA_VISIBLE_DEVICES}}
 export CUDA_VISIBLE_DEVICES
+export RUN_VARIANT
 
 TRACE=${TRACE:-1}
 if [[ "${TRACE}" == "1" ]]; then
   set -x
 fi
 
-echo "[INFO] DATASET=${DATASET}"
+echo "[INFO] RUN_VARIANT=${RUN_VARIANT}"
 echo "[INFO] REWARD_KIND=${REWARD_KIND}"
-echo "[INFO] MATH_ENABLE_SUB_REWARDS=${MATH_ENABLE_SUB_REWARDS}"
-echo "[INFO] MATH_SUBREWARD_PRESET=${MATH_SUBREWARD_PRESET}"
+echo "[INFO] CODING_ENABLE_SUB_REWARDS=${CODING_ENABLE_SUB_REWARDS}"
+if [[ "${ADV_ESTIMATOR:-grpo}" == "gdpo" ]]; then
+  echo "[INFO] GDPO_REWARD_KEYS=${GDPO_REWARD_KEYS}"
+  echo "[INFO] GDPO_REWARD_WEIGHTS=${GDPO_REWARD_WEIGHTS:-<equal>}"
+fi
 echo "[INFO] MODEL_PRESET=${MODEL_PRESET}"
 echo "[INFO] MODEL_ID=${MODEL_ID}"
 echo "[INFO] KL_MODE=${KL_MODE}"
@@ -413,14 +422,26 @@ echo "[INFO] FREE_CACHE_ENGINE=${FREE_CACHE_ENGINE}"
 
 RAY_ADDRESS=${RAY_ADDRESS:-""}
 
+SANDBOX_FUSION_ROOT=${SANDBOX_FUSION_ROOT:-"/shared/nas2/yujiz/rl/SandboxFusion"}
+SANDBOX_SERVICE_ENV=${SANDBOX_SERVICE_ENV:-"sandbox-service"}
+SANDBOX_RUNTIME_ENV=${SANDBOX_RUNTIME_ENV:-"sandbox-runtime"}
+SANDBOX_HOST=${SANDBOX_HOST:-"127.0.0.1"}
+SANDBOX_PORT=${SANDBOX_PORT:-""}
+SANDBOX_AUTO_START=${SANDBOX_AUTO_START:-1}
+SANDBOX_CONFIG_NAME=${SANDBOX_CONFIG_NAME:-"local"}
+SANDBOX_FUSION_URL=${SANDBOX_FUSION_URL:-""}
+SANDBOX_HEALTHCHECK_TIMEOUT_S=${SANDBOX_HEALTHCHECK_TIMEOUT_S:-12}
+SANDBOX_START_TIMEOUT_S=${SANDBOX_START_TIMEOUT_S:-90}
+SKIP_SANDBOX_HEALTHCHECK=${SKIP_SANDBOX_HEALTHCHECK:-0}
+
 ############################################
 # 1) Experiment config
 ############################################
-PROJECT_NAME=${PROJECT_NAME:-"math_grpo"}
+PROJECT_NAME=${PROJECT_NAME:-"eurus_grpo"}
 if [[ -n "${RUN_TAG}" ]]; then
-  DEFAULT_EXP_NAME="grpo-${MODEL_TAG}-${DATASET_LABEL}-${REWARD_LABEL}-${KL_LABEL}-${RUN_TAG}-${RUN_INSTANCE_TAG}"
+  DEFAULT_EXP_NAME="grpo-${MODEL_TAG}-${REWARD_LABEL}-${KL_LABEL}-${RUN_TAG}-${RUN_INSTANCE_TAG}"
 else
-  DEFAULT_EXP_NAME="grpo-${MODEL_TAG}-${DATASET_LABEL}-${REWARD_LABEL}-${KL_LABEL}-${RUN_INSTANCE_TAG}"
+  DEFAULT_EXP_NAME="grpo-${MODEL_TAG}-${REWARD_LABEL}-${KL_LABEL}-${RUN_INSTANCE_TAG}"
 fi
 EXP_NAME=${EXP_NAME:-"${DEFAULT_EXP_NAME}"}
 
@@ -453,6 +474,8 @@ SAVE_EVERY_STEPS=${CLI_SAVE_FREQ:-${SAVE_EVERY_STEPS:--1}}
 EVAL_EVERY_STEPS=${EVAL_EVERY_STEPS:-5}
 TOTAL_EPOCHS=${TOTAL_EPOCHS:-10}
 TOTAL_STEPS=${CLI_TOTAL_STEPS:-${TOTAL_STEPS:-1000}}
+MAX_ACTOR_CKPT_TO_KEEP=${MAX_ACTOR_CKPT_TO_KEEP:-5}
+MAX_CRITIC_CKPT_TO_KEEP=${MAX_CRITIC_CKPT_TO_KEEP:-5}
 SAVE_BEST_CHECKPOINT=${SAVE_BEST_CHECKPOINT:-true}
 BEST_CHECKPOINT_DIRNAME=${BEST_CHECKPOINT_DIRNAME:-"best_reward_checkpoint"}
 BEST_CHECKPOINT_METRIC=${BEST_CHECKPOINT_METRIC:-"auto"}
@@ -475,7 +498,7 @@ GEN_TP=${GEN_TP:-1}
 # Larger models (7-8B): offload enabled, conservative batches
 case "${MODEL_PRESET}" in
   qwen3-4b|qwen-4b|4b|deepseek-r1-distill-qwen-1.5b|deepseek-r1-1.5b|r1-1.5b)
-    VLLM_GPU_UTIL=${VLLM_GPU_UTIL:-0.3}
+    VLLM_GPU_UTIL=${VLLM_GPU_UTIL:-0.35}
     VLLM_MAX_NUM_SEQS=${VLLM_MAX_NUM_SEQS:-128}
     TRAIN_PROMPT_BSZ=${TRAIN_PROMPT_BSZ:-4}
     GEN_PROMPT_BSZ=${GEN_PROMPT_BSZ:-16}
@@ -538,52 +561,36 @@ HF_HOME=${HF_HOME:-"${RAY_DATA_HOME}/hf_cache"}
 export HF_HOME
 export HF_HUB_CACHE="${HF_HOME}"
 
-case "${DATASET}" in
-  gsm8k)
-    TRAIN_FILE="${RAY_DATA_HOME}/gsm8k/train.parquet"
-    VAL_FILE="${RAY_DATA_HOME}/gsm8k/test.parquet"
-    ;;
-  deepscalar)
-    DEEPSCALAR_DEFAULT_TRAIN_FILE="${RAY_DATA_HOME}/math/deepscalar_train.parquet"
-    DEEPSCALAR_FORMATTED_TRAIN_FILE="${RAY_DATA_HOME}/math/deepscalar_train_formatted.parquet"
-    DEEPSCALAR_DEFAULT_VAL_FILE="${RAY_DATA_HOME}/math/math_eval_master.parquet"
-    DEEPSCALAR_EVAL_FILE="${RAY_DATA_HOME}/math/math_eval_deepscalar.parquet"
-    if [[ -n "${DEEPSCALAR_TRAIN_FILE:-}" ]]; then
-      TRAIN_FILE="${DEEPSCALAR_TRAIN_FILE}"
-    elif [[ -f "${DEEPSCALAR_FORMATTED_TRAIN_FILE}" ]]; then
-      TRAIN_FILE="${DEEPSCALAR_FORMATTED_TRAIN_FILE}"
-    else
-      TRAIN_FILE="${DEEPSCALAR_DEFAULT_TRAIN_FILE}"
-    fi
-    if [[ -n "${DEEPSCALAR_VAL_FILE:-}" ]]; then
-      VAL_FILE="${DEEPSCALAR_VAL_FILE}"
-    elif [[ -f "${DEEPSCALAR_EVAL_FILE}" ]]; then
-      VAL_FILE="${DEEPSCALAR_EVAL_FILE}"
-    else
-      VAL_FILE="${DEEPSCALAR_DEFAULT_VAL_FILE}"
-    fi
-    ;;
-  general365)
-    GENERAL365_DEFAULT_TRAIN_FILE="${RAY_DATA_HOME}/general365/train.parquet"
-    GENERAL365_FORMATTED_TRAIN_FILE="${RAY_DATA_HOME}/general365/train_formatted.parquet"
-    if [[ -n "${GENERAL365_TRAIN_FILE:-}" ]]; then
-      TRAIN_FILE="${GENERAL365_TRAIN_FILE}"
-    elif [[ -f "${GENERAL365_FORMATTED_TRAIN_FILE}" ]]; then
-      TRAIN_FILE="${GENERAL365_FORMATTED_TRAIN_FILE}"
-    else
-      TRAIN_FILE="${GENERAL365_DEFAULT_TRAIN_FILE}"
-    fi
-    VAL_FILE="${RAY_DATA_HOME}/math/math_eval_master.parquet"
-    ;;
-  openr1)
-    TRAIN_FILE="${RAY_DATA_HOME}/openr1_math/train.parquet"
-    VAL_FILE="${RAY_DATA_HOME}/openr1_math/test.parquet"
-    ;;
-  master)
-    TRAIN_FILE="${RAY_DATA_HOME}/openr1_math/train.parquet" # fallback train
-    VAL_FILE="${RAY_DATA_HOME}/math/math_eval_master.parquet"
-    ;;
-esac
+EURUS_DEFAULT_TRAIN_FILE="${RAY_DATA_HOME}/eurus/eurus_code_train.parquet"
+EURUS_DEFAULT_VAL_FILE="${RAY_DATA_HOME}/eurus/eurus_code_val.parquet"
+DEEPCODER_DEFAULT_TRAIN_FILE="${RAY_DATA_HOME}/math/deepcoder_full_train.parquet"
+DEEPCODER_DEFAULT_VAL_FILE="${RAY_DATA_HOME}/coding/code_eval_master.parquet"
+DEEPCODER_CLEAN_TRAIN_FILE="${RAY_DATA_HOME}/math/deepcoder_full_train_clean.parquet"
+DEEPCODER_CLEAN_VAL_FILE="${RAY_DATA_HOME}/coding/code_eval_master_clean.parquet"
+
+if [[ -n "${EURUS_TRAIN_FILE:-}" ]]; then
+  TRAIN_FILE="${EURUS_TRAIN_FILE}"
+elif [[ -f "${EURUS_DEFAULT_TRAIN_FILE}" ]]; then
+  TRAIN_FILE="${EURUS_DEFAULT_TRAIN_FILE}"
+elif [[ -n "${DEEPCODER_TRAIN_FILE:-}" ]]; then
+  TRAIN_FILE="${DEEPCODER_TRAIN_FILE}"
+elif [[ -f "${DEEPCODER_CLEAN_TRAIN_FILE}" ]]; then
+  TRAIN_FILE="${DEEPCODER_CLEAN_TRAIN_FILE}"
+else
+  TRAIN_FILE="${DEEPCODER_DEFAULT_TRAIN_FILE}"
+fi
+
+if [[ -n "${EURUS_VAL_FILE:-}" ]]; then
+  VAL_FILE="${EURUS_VAL_FILE}"
+elif [[ -f "${EURUS_DEFAULT_VAL_FILE}" ]]; then
+  VAL_FILE="${EURUS_DEFAULT_VAL_FILE}"
+elif [[ -n "${DEEPCODER_VAL_FILE:-}" ]]; then
+  VAL_FILE="${DEEPCODER_VAL_FILE}"
+elif [[ -f "${DEEPCODER_CLEAN_VAL_FILE}" ]]; then
+  VAL_FILE="${DEEPCODER_CLEAN_VAL_FILE}"
+else
+  VAL_FILE="${DEEPCODER_DEFAULT_VAL_FILE}"
+fi
 
 TENSORBOARD_DIR="${CKPTS_DIR}/tensorboard"
 TRAIN_LOG_PATH="${CKPTS_DIR}/train.log"
@@ -609,6 +616,169 @@ if [[ "${GEN_TP}" -gt "${NUM_GPUS}" ]]; then
   GEN_TP="${NUM_GPUS}"
 fi
 
+find_free_port() {
+  local base=${1:-6379}
+  local limit=${2:-120}
+  BASE="${base}" LIMIT="${limit}" python3 - <<'PY'
+import os
+import socket
+import sys
+
+base = int(os.environ["BASE"])
+limit = int(os.environ["LIMIT"])
+
+for port in range(base, base + limit + 1):
+    sock = socket.socket()
+    try:
+        sock.bind(("0.0.0.0", port))
+    except OSError:
+        sock.close()
+        continue
+    sock.close()
+    print(port)
+    sys.exit(0)
+
+print(base)
+PY
+}
+
+check_sandbox_fusion() {
+  if [[ "${SKIP_SANDBOX_HEALTHCHECK}" == "1" ]]; then
+    echo "[WARN] Skipping sandbox health check because SKIP_SANDBOX_HEALTHCHECK=1"
+    return 0
+  fi
+
+  echo "[INFO] SANDBOX_FUSION_URL=${SANDBOX_FUSION_URL}"
+  SANDBOX_FUSION_URL="${SANDBOX_FUSION_URL}" \
+  SANDBOX_HEALTHCHECK_TIMEOUT_S="${SANDBOX_HEALTHCHECK_TIMEOUT_S}" \
+  python3 - <<'PY'
+import json
+import os
+import sys
+
+import requests
+
+url = os.environ["SANDBOX_FUSION_URL"]
+timeout_s = int(os.environ["SANDBOX_HEALTHCHECK_TIMEOUT_S"])
+payload = {
+    "compile_timeout": 5,
+    "run_timeout": 5,
+    "code": "print('sandbox_healthcheck_ok')",
+    "stdin": "",
+    "memory_limit_MB": 128,
+    "language": "python",
+    "files": {},
+    "fetch_files": [],
+}
+headers = {"Content-Type": "application/json", "Accept": "application/json"}
+
+try:
+    response = requests.post(url, headers=headers, data=json.dumps(payload), timeout=timeout_s)
+except Exception as exc:
+    print(f"[ERROR] Sandbox health check request failed for {url}: {exc}", file=sys.stderr)
+    sys.exit(1)
+
+print(f"[INFO] Sandbox health check HTTP {response.status_code} for {url}")
+if response.status_code != 200:
+    body = response.text.strip().replace("\n", " ")
+    if len(body) > 400:
+        body = body[:400] + "..."
+    print(f"[ERROR] Sandbox health check failed: HTTP {response.status_code}, body={body}", file=sys.stderr)
+    sys.exit(1)
+
+try:
+    result = response.json()
+except Exception as exc:
+    body = response.text.strip().replace("\n", " ")
+    if len(body) > 400:
+        body = body[:400] + "..."
+    print(f"[ERROR] Sandbox health check returned non-JSON response: {exc}; body={body}", file=sys.stderr)
+    sys.exit(1)
+
+status = result.get("status")
+run_result = result.get("run_result") or {}
+stdout = (run_result.get("stdout") or "").strip()
+stderr = (run_result.get("stderr") or "").strip()
+
+if status != "Success":
+    print(
+        f"[ERROR] Sandbox health check failed: status={status}, stdout={stdout!r}, stderr={stderr!r}",
+        file=sys.stderr,
+    )
+    sys.exit(1)
+
+if stdout != "sandbox_healthcheck_ok":
+    print(
+        f"[ERROR] Sandbox health check returned unexpected stdout={stdout!r}, stderr={stderr!r}",
+        file=sys.stderr,
+    )
+    sys.exit(1)
+
+print("[INFO] Sandbox health check passed.")
+PY
+}
+
+ensure_sandbox_fusion() {
+  if check_sandbox_fusion; then
+    return 0
+  fi
+
+  if [[ "${SANDBOX_AUTO_START}" != "1" ]]; then
+    echo "[ERROR] Sandbox health check failed and SANDBOX_AUTO_START=${SANDBOX_AUTO_START}" >&2
+    return 1
+  fi
+
+  echo "[INFO] Attempting to start local Sandbox Fusion..." >&2
+
+  local sandbox_state_dir="${CKPTS_DIR}/sandbox_fusion"
+  mkdir -p "${sandbox_state_dir}"
+
+  export SANDBOX_PID_FILE="${sandbox_state_dir}/sandbox_fusion.pid"
+
+  SANDBOX_FUSION_URL="$(
+    SANDBOX_FUSION_ROOT="${SANDBOX_FUSION_ROOT}" \
+    SANDBOX_SERVICE_ENV="${SANDBOX_SERVICE_ENV}" \
+    SANDBOX_RUNTIME_ENV="${SANDBOX_RUNTIME_ENV}" \
+    SANDBOX_CONFIG_NAME="${SANDBOX_CONFIG_NAME}" \
+    SANDBOX_HOST="${SANDBOX_HOST}" \
+    SANDBOX_PORT="${SANDBOX_PORT}" \
+    SANDBOX_START_TIMEOUT_S="${SANDBOX_START_TIMEOUT_S}" \
+    SANDBOX_STATE_DIR="${sandbox_state_dir}" \
+    SANDBOX_LOG_PATH="${sandbox_state_dir}/sandbox_fusion.log" \
+    SANDBOX_PID_FILE="${SANDBOX_PID_FILE}" \
+    SANDBOX_URL_FILE="${sandbox_state_dir}/sandbox_fusion.url" \
+    "${SCRIPT_DIR}/start_sandbox_fusion.sh"
+  )"
+  export SANDBOX_FUSION_URL
+
+  check_sandbox_fusion
+}
+
+if [[ -z "${SANDBOX_PORT}" || "${SANDBOX_PORT}" == "auto" ]]; then
+  SANDBOX_PORT=$(find_free_port 28080 400)
+fi
+if [[ -z "${SANDBOX_FUSION_URL}" ]]; then
+  SANDBOX_FUSION_URL="http://${SANDBOX_HOST}:${SANDBOX_PORT}/run_code"
+fi
+
+export SANDBOX_PORT
+export SANDBOX_FUSION_URL
+
+ensure_sandbox_fusion
+
+cleanup_sandbox() {
+  if [[ -n "${SANDBOX_PID_FILE:-}" ]] && [[ -f "${SANDBOX_PID_FILE}" ]]; then
+    local pid=$(cat "${SANDBOX_PID_FILE}")
+    if [[ -n "${pid}" ]] && ps -p "${pid}" >/dev/null 2>&1; then
+      echo "[INFO] Cleaning up local sandbox_fusion process tree (root=${pid})..." >&2
+      # Kill child workers first (uvicorn --workers forks children), then parent
+      pkill -9 -P "${pid}" 2>/dev/null || true
+      kill -9 "${pid}" 2>/dev/null || true
+    fi
+  fi
+}
+trap cleanup_sandbox EXIT
+
 echo "[INFO] CKPTS_DIR=${CKPTS_DIR}"
 echo "[INFO] TRAIN_LOG_PATH=${TRAIN_LOG_PATH}"
 echo "[INFO] TENSORBOARD_DIR=${TENSORBOARD_DIR}"
@@ -619,6 +789,8 @@ if [[ -n "${RAY_ADDRESS}" ]]; then
 else
   echo "[INFO] RAY_ADDRESS is unset; verl will start a local Ray runtime via ray.init()."
 fi
+echo "[INFO] SANDBOX_PORT=${SANDBOX_PORT}"
+echo "[INFO] SANDBOX_FUSION_URL=${SANDBOX_FUSION_URL}"
 echo "[INFO] EVAL_EVERY_STEPS=${EVAL_EVERY_STEPS}"
 echo "[INFO] SAVE_EVERY_STEPS=${SAVE_EVERY_STEPS}"
 
@@ -648,6 +820,7 @@ CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES} python3 -m verl.trainer.main_ppo \
   data.filter_overlong_prompts=true \
   actor_rollout_ref.rollout.n="${N_RESP_PER_PROMPT}" \
   algorithm.adv_estimator="${ADV_ESTIMATOR}" \
+  "${GDPO_ARGS[@]}" \
   actor_rollout_ref.model.use_remove_padding=true \
   actor_rollout_ref.actor.use_dynamic_bsz="${USE_DYNAMIC_BSZ}" \
   actor_rollout_ref.ref.log_prob_use_dynamic_bsz="${USE_DYNAMIC_BSZ}" \
@@ -682,32 +855,24 @@ CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES} python3 -m verl.trainer.main_ppo \
   reward_model.reward_manager=naive \
   ++custom_reward_function.path="${SCRIPT_DIR}/custom_reward.py" \
   ++custom_reward_function.name="compute_score" \
+  sandbox_fusion.url="${SANDBOX_FUSION_URL}" \
   ++reward_model.reward_kwargs.combine_mode="${COMBINE_MODE}" \
-  ++reward_model.reward_kwargs.perf_gate="${MATH_PERF_GATE}" \
-  ++reward_model.reward_kwargs.math_enable_sub_rewards="${MATH_ENABLE_SUB_REWARDS}" \
-  ++reward_model.reward_kwargs.math_signed_reward="${MATH_SIGNED_REWARD}" \
-  ++reward_model.reward_kwargs.math_enable_final_answer_reward="${MATH_ENABLE_FINAL_ANSWER_REWARD}" \
-  ++reward_model.reward_kwargs.math_weight_final_answer_reward="${MATH_WEIGHT_FINAL_ANSWER_REWARD}" \
-  ++reward_model.reward_kwargs.math_enable_answer_efficiency_reward="${MATH_ENABLE_ANSWER_EFFICIENCY_REWARD}" \
-  ++reward_model.reward_kwargs.math_weight_answer_efficiency_reward="${MATH_WEIGHT_ANSWER_EFFICIENCY_REWARD}" \
-  ++reward_model.reward_kwargs.math_enable_consistency_reward="${MATH_ENABLE_CONSISTENCY_REWARD}" \
-  ++reward_model.reward_kwargs.math_weight_consistency_reward="${MATH_WEIGHT_CONSISTENCY_REWARD}" \
-  ++reward_model.reward_kwargs.math_enable_executable_unit_pass_rate_reward="${MATH_ENABLE_EXECUTABLE_UNIT_PASS_RATE_REWARD}" \
-  ++reward_model.reward_kwargs.math_weight_executable_unit_pass_rate_reward="${MATH_WEIGHT_EXECUTABLE_UNIT_PASS_RATE_REWARD}" \
-  ++reward_model.reward_kwargs.math_enable_step_arithmetic_validity_reward="${MATH_ENABLE_STEP_ARITHMETIC_VALIDITY_REWARD}" \
-  ++reward_model.reward_kwargs.math_weight_step_arithmetic_validity_reward="${MATH_WEIGHT_STEP_ARITHMETIC_VALIDITY_REWARD}" \
-  ++reward_model.reward_kwargs.math_enable_prefix_consistency_reward="${MATH_ENABLE_PREFIX_CONSISTENCY_REWARD}" \
-  ++reward_model.reward_kwargs.math_weight_prefix_consistency_reward="${MATH_WEIGHT_PREFIX_CONSISTENCY_REWARD}" \
-  ++reward_model.reward_kwargs.math_enable_trace_efficiency_reward="${MATH_ENABLE_TRACE_EFFICIENCY_REWARD}" \
-  ++reward_model.reward_kwargs.math_weight_trace_efficiency_reward="${MATH_WEIGHT_TRACE_EFFICIENCY_REWARD}" \
-  ++reward_model.reward_kwargs.math_enable_answer_extractability_reward="${MATH_ENABLE_ANSWER_EXTRACTABILITY_REWARD}" \
-  ++reward_model.reward_kwargs.math_weight_answer_extractability_reward="${MATH_WEIGHT_ANSWER_EXTRACTABILITY_REWARD}" \
-  ++reward_model.reward_kwargs.math_executable_wrong_cap="${MATH_EXECUTABLE_WRONG_CAP}" \
-  ++reward_model.reward_kwargs.math_executable_numeric_tol="${MATH_EXECUTABLE_NUMERIC_TOL}" \
-  ++reward_model.reward_kwargs.math_executable_max_claims="${MATH_EXECUTABLE_MAX_CLAIMS}" \
-  ++reward_model.reward_kwargs.math_efficiency_min_tokens="${MATH_EFFICIENCY_MIN_TOKENS}" \
-  ++reward_model.reward_kwargs.math_efficiency_max_tokens="${MATH_EFFICIENCY_MAX_TOKENS}" \
-  ++reward_model.reward_kwargs.math_efficiency_post_answer_max_tokens="${MATH_EFFICIENCY_POST_ANSWER_MAX_TOKENS}" \
+  ++reward_model.reward_kwargs.perf_gate="${CODING_PERF_GATE}" \
+  ++reward_model.reward_kwargs.coding_enable_sub_rewards="${CODING_ENABLE_SUB_REWARDS}" \
+  ++reward_model.reward_kwargs.coding_enable_code_extractability_reward="${CODING_ENABLE_CODE_EXTRACTABILITY_REWARD}" \
+  ++reward_model.reward_kwargs.coding_weight_code_extractability_reward="${CODING_WEIGHT_CODE_EXTRACTABILITY_REWARD}" \
+  ++reward_model.reward_kwargs.coding_enable_syntax_validity_reward="${CODING_ENABLE_SYNTAX_VALIDITY_REWARD}" \
+  ++reward_model.reward_kwargs.coding_weight_syntax_validity_reward="${CODING_WEIGHT_SYNTAX_VALIDITY_REWARD}" \
+  ++reward_model.reward_kwargs.coding_enable_unit_test_pass_rate="${CODING_ENABLE_UNIT_TEST_PASS_RATE}" \
+  ++reward_model.reward_kwargs.coding_weight_unit_test_pass_rate="${CODING_WEIGHT_UNIT_TEST_PASS_RATE}" \
+  ++reward_model.reward_kwargs.coding_enable_compiler_runtime_feedback="${CODING_ENABLE_COMPILER_RUNTIME_FEEDBACK}" \
+  ++reward_model.reward_kwargs.coding_weight_compiler_runtime_feedback="${CODING_WEIGHT_COMPILER_RUNTIME_FEEDBACK}" \
+  ++reward_model.reward_kwargs.coding_enable_static_analysis_reward="${CODING_ENABLE_STATIC_ANALYSIS_REWARD}" \
+  ++reward_model.reward_kwargs.coding_weight_static_analysis_reward="${CODING_WEIGHT_STATIC_ANALYSIS_REWARD}" \
+  ++reward_model.reward_kwargs.coding_enable_executed_token_credit="${CODING_ENABLE_EXECUTED_TOKEN_CREDIT}" \
+  ++reward_model.reward_kwargs.coding_weight_executed_token_credit="${CODING_WEIGHT_EXECUTED_TOKEN_CREDIT}" \
+  ++reward_model.reward_kwargs.coding_enable_block_level_process_reward="${CODING_ENABLE_BLOCK_LEVEL_PROCESS_REWARD}" \
+  ++reward_model.reward_kwargs.coding_weight_block_level_process_reward="${CODING_WEIGHT_BLOCK_LEVEL_PROCESS_REWARD}" \
   ++reward_model.reward_kwargs.pdpo_beta_tie="${PDPO_BETA_TIE}" \
   ++reward_model.reward_kwargs.pdpo_beta_same="${PDPO_BETA_SAME}" \
   ++reward_model.reward_kwargs.pdpo_lambda_aux="${PDPO_LAMBDA_AUX}" \
@@ -747,8 +912,8 @@ CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES} python3 -m verl.trainer.main_ppo \
   trainer.total_epochs="${TOTAL_EPOCHS}" \
   trainer.total_training_steps="${TOTAL_STEPS}" \
   trainer.default_local_dir="${CKPTS_DIR}" \
-  trainer.max_actor_ckpt_to_keep=5 \
-  trainer.max_critic_ckpt_to_keep=5 \
+  trainer.max_actor_ckpt_to_keep="${MAX_ACTOR_CKPT_TO_KEEP}" \
+  trainer.max_critic_ckpt_to_keep="${MAX_CRITIC_CKPT_TO_KEEP}" \
   trainer.resume_mode="${RESUME_MODE:-disable}" \
   ++trainer.save_best_checkpoint="${SAVE_BEST_CHECKPOINT}" \
   ++trainer.best_checkpoint_dirname="${BEST_CHECKPOINT_DIRNAME}" \

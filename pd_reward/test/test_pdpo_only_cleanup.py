@@ -45,6 +45,7 @@ def test_custom_reward_rejects_legacy_pd_and_pdar_modes():
     import custom_reward
 
     assert custom_reward._normalize_combine_mode("pdpo") == "pdpo"
+    assert custom_reward._normalize_combine_mode("gdpo") == "gdpo"
     assert custom_reward._normalize_combine_mode("new") == "multiplier"
 
     for mode in ("pd", "pdar", "pdar-ori"):

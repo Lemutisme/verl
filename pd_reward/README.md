@@ -14,12 +14,13 @@ This is intentionally different from simply adding more reward terms. PDPO chang
 |---|---|---|---|---|
 | Vanilla GRPO | `-reward ori` | original reward only | `grpo` | baseline |
 | Static subreward mix | `-reward new` | scalarized main + aux | `grpo` | fixed reward shaping |
+| GDPO baseline | `-reward gdpo` | main and aux channels exported separately | `gdpo` | fixed-weight per-channel normalization baseline |
 | **PDPO** | `-reward pdpo` | original/main reward as anchor, aux exported separately | `pdpo` | correctness-safe, reliability-aware process advantage estimation |
 
 `run_multiple_exp.sh` now defaults to the active matrix:
 
 ```bash
-REWARDS=("pdpo" "new" "ori")
+REWARDS=("pdpo" "gdpo" "new" "ori")
 ```
 
 Run PDPO explicitly with:
@@ -178,7 +179,7 @@ Metrics emitted include:
 ### Math / General
 
 ```bash
-bash run_grpo_math.sh -reward pdpo -dataset deepscalar -gpus 5
+bash train_math.sh -reward pdpo -dataset deepscalar -gpus 5
 ```
 
 DeepScaleR is the default math training dataset for current sweeps. Its eval file is:
@@ -192,7 +193,7 @@ That eval suite combines the existing math master eval with General365 test and 
 ### Coding
 
 ```bash
-bash run_grpo.sh -reward pdpo -gpus 5
+bash train_code.sh -reward pdpo -gpus 5
 ```
 
 The coding launcher defaults to Eurus-2-RL prepared files:
@@ -292,7 +293,7 @@ Example:
 
 ```bash
 PDPO_BETA_TIE=0.10 PDPO_BETA_SAME=0.70 \
-  bash run_grpo_math.sh -reward pdpo -dataset general365 -gpus 5
+  bash train_math.sh -reward pdpo -dataset general365 -gpus 5
 ```
 
 ## Positioning
@@ -311,8 +312,8 @@ pd_reward/
 ├── custom_reward.py              # Reward entry point and flattened reward extras
 ├── pdpo_advantage.py             # PDPO advantage estimator
 ├── pdpo_init.py                  # Registers local PDPO estimator
-├── run_grpo_math.sh              # Math/general training launcher
-├── run_grpo.sh                   # Coding training launcher
+├── train_math.sh                 # Math/general training launcher
+├── train_code.sh                 # Coding training launcher
 ├── run_multiple_exp.sh           # Multi-experiment launcher
 ├── data_preprocess/
 │   └── prepare_eurus_data.py      # Eurus-2-RL coding train/eval preparation
@@ -333,5 +334,5 @@ cd /shared/nas2/yujiz/rl/verl
 source /shared/nas2/yujiz/anaconda3/etc/profile.d/conda.sh
 conda activate verl
 python -m pytest -q pd_reward
-bash -n pd_reward/run_grpo.sh pd_reward/run_grpo_math.sh pd_reward/run_multiple_exp.sh
+bash -n pd_reward/train_code.sh pd_reward/train_math.sh pd_reward/run_multiple_exp.sh
 ```

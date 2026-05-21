@@ -75,14 +75,16 @@ def _normalize_combine_mode(value: Any) -> str:
         "multiplier": "multiplier",
         "pdpo": "pdpo",
         "pdpo-reward": "pdpo",
+        "gdpo": "gdpo",
+        "gdpo-reward": "gdpo",
     }
     if mode in aliases:
         return aliases[mode]
-    raise ValueError(f"Unsupported combine_mode: {value!r}; expected none, multiplier/new, or pdpo")
+    raise ValueError(f"Unsupported combine_mode: {value!r}; expected none, multiplier/new, pdpo, or gdpo")
 
 
 def _is_advantage_aux_mode(combine_mode: str) -> bool:
-    return combine_mode == "pdpo"
+    return combine_mode in {"pdpo", "gdpo"}
 
 
 def _subreward_weight(name: str, kwargs: dict[str, Any]) -> float:

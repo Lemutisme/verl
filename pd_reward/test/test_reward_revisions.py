@@ -183,7 +183,7 @@ def test_static_and_block_coding_rewards_are_not_enabled_by_default():
 
 
 def test_math_executable_preset_uses_revised_live_rewards_by_default():
-    script = (PROJECT_DIR / "run_grpo_math.sh").read_text()
+    script = (PROJECT_DIR / "train_math.sh").read_text()
 
     assert "MATH_ENABLE_FINAL_ANSWER_REWARD=${MATH_ENABLE_FINAL_ANSWER_REWARD:-false}" in script
     assert "MATH_ENABLE_ANSWER_EFFICIENCY_REWARD=${MATH_ENABLE_ANSWER_EFFICIENCY_REWARD:-false}" in script
@@ -210,9 +210,9 @@ def test_math_executable_preset_uses_revised_live_rewards_by_default():
 
 
 def test_math_reward_presets_only_include_active_matrix():
-    script = (PROJECT_DIR / "run_grpo_math.sh").read_text()
+    script = (PROJECT_DIR / "train_math.sh").read_text()
 
-    assert "-reward {ori|new|pdpo}" in script
+    assert "-reward {ori|new|pdpo|gdpo}" in script
     assert 'REWARD_KIND=${REWARD_KIND:-"pdpo"}' in script
     assert "pdar-ori|" not in script
     assert "  pd|primal_dual|pd_reward)" not in script
@@ -220,7 +220,7 @@ def test_math_reward_presets_only_include_active_matrix():
 
 
 def test_coding_pdpo_script_defaults_to_general_aux_rewards():
-    script = (PROJECT_DIR / "run_grpo.sh").read_text()
+    script = (PROJECT_DIR / "train_code.sh").read_text()
     pdpo_start = script.index("  pdpo|pdpo_reward)")
     pdpo_end = script.index("  *)", pdpo_start)
     pdpo_block = script[pdpo_start:pdpo_end]
@@ -245,7 +245,7 @@ def test_coding_pdpo_script_defaults_to_general_aux_rewards():
 
 
 def test_coding_script_prefers_eurus_train_and_eval_data():
-    script = (PROJECT_DIR / "run_grpo.sh").read_text()
+    script = (PROJECT_DIR / "train_code.sh").read_text()
 
     assert "eurus_code_train.parquet" in script
     assert "eurus_code_val.parquet" in script
@@ -282,9 +282,9 @@ def test_eurus_coding_sources_route_to_executable_reward(monkeypatch):
 
 
 def test_coding_reward_presets_only_include_active_matrix():
-    script = (PROJECT_DIR / "run_grpo.sh").read_text()
+    script = (PROJECT_DIR / "train_code.sh").read_text()
 
-    assert "-reward {ori|new|pdpo}" in script
+    assert "-reward {ori|new|pdpo|gdpo}" in script
     assert 'REWARD_KIND=${REWARD_KIND:-"pdpo"}' in script
     assert "pdar-ori|" not in script
     assert "  pd|primal_dual|pd_reward)" not in script
@@ -292,7 +292,7 @@ def test_coding_reward_presets_only_include_active_matrix():
 
 
 def test_math_script_prefers_formatted_deepscalar_train_data():
-    script = (PROJECT_DIR / "run_grpo_math.sh").read_text()
+    script = (PROJECT_DIR / "train_math.sh").read_text()
 
     assert "deepscalar_train_formatted.parquet" in script
     assert "DEEPSCALAR_TRAIN_FILE" in script
@@ -301,7 +301,7 @@ def test_math_script_prefers_formatted_deepscalar_train_data():
 
 
 def test_math_script_prefers_formatted_general365_train_data():
-    script = (PROJECT_DIR / "run_grpo_math.sh").read_text()
+    script = (PROJECT_DIR / "train_math.sh").read_text()
 
     assert "general365/train_formatted.parquet" in script
     assert "GENERAL365_TRAIN_FILE" in script
@@ -338,15 +338,15 @@ def test_math_prompt_formatter_can_normalize_boxed_general365_instruction_to_has
 def test_run_multiple_exp_uses_active_reward_matrix_only():
     script = (PROJECT_DIR / "run_multiple_exp.sh").read_text()
 
-    assert "[-reward {pdpo|new|ori}]" in script
-    assert 'REWARDS=("pdpo" "new" "ori")' in script
+    assert "[-reward {pdpo|gdpo|new|ori}]" in script
+    assert 'REWARDS=("pdpo" "gdpo" "new" "ori")' in script
     assert "pdar-ori" not in script
     assert "pdar|pd|" not in script
 
 
 def test_pdpo_modes_are_available_and_in_default_matrix():
-    math_script = (PROJECT_DIR / "run_grpo_math.sh").read_text()
-    code_script = (PROJECT_DIR / "run_grpo.sh").read_text()
+    math_script = (PROJECT_DIR / "train_math.sh").read_text()
+    code_script = (PROJECT_DIR / "train_code.sh").read_text()
     multi_script = (PROJECT_DIR / "run_multiple_exp.sh").read_text()
 
     assert "pdpo" in math_script
@@ -359,10 +359,65 @@ def test_pdpo_modes_are_available_and_in_default_matrix():
     assert 'ADV_ESTIMATOR="pdpo"' in code_script
     assert 'COMBINE_MODE="pdpo"' in code_script
 
-    assert "[-reward {pdpo|new|ori}]" in multi_script
-    assert 'REWARDS=("pdpo" "new" "ori")' in multi_script
+    assert "[-reward {pdpo|gdpo|new|ori}]" in multi_script
+    assert 'REWARDS=("pdpo" "gdpo" "new" "ori")' in multi_script
     assert 'pdpo|pdpo_reward)' in multi_script
     assert 'REWARDS=("pdpo")' in multi_script
+
+
+def test_gdpo_modes_are_available_with_reward_components():
+    math_script = (PROJECT_DIR / "train_math.sh").read_text()
+    code_script = (PROJECT_DIR / "train_code.sh").read_text()
+    multi_script = (PROJECT_DIR / "run_multiple_exp.sh").read_text()
+
+    math_gdpo = math_script[math_script.index("  gdpo|gdpo_reward)") : math_script.index("  *)", math_script.index("  gdpo|gdpo_reward)"))]
+    code_gdpo = code_script[code_script.index("  gdpo|gdpo_reward)") : code_script.index("  *)", code_script.index("  gdpo|gdpo_reward)"))]
+
+    assert 'REWARD_LABEL="gdpo"' in math_gdpo
+    assert 'ADV_ESTIMATOR="gdpo"' in math_gdpo
+    assert 'COMBINE_MODE="gdpo"' in math_gdpo
+    assert 'GDPO_ARGS+=("++algorithm.gdpo_reward_keys=${GDPO_REWARD_KEYS}")' in math_script
+    assert 'GDPO_ARGS+=("++algorithm.gdpo_reward_weights=${GDPO_REWARD_WEIGHTS}")' in math_script
+    assert "math_step_arithmetic_validity_reward" in math_script
+    assert "math_prefix_consistency_reward" in math_script
+    assert "math_trace_efficiency_reward" in math_script
+    assert "math_answer_extractability_reward" in math_script
+
+    assert 'REWARD_LABEL="gdpo"' in code_gdpo
+    assert 'ADV_ESTIMATOR="gdpo"' in code_gdpo
+    assert 'COMBINE_MODE="gdpo"' in code_gdpo
+    assert 'GDPO_ARGS+=("++algorithm.gdpo_reward_keys=${GDPO_REWARD_KEYS}")' in code_script
+    assert 'GDPO_ARGS+=("++algorithm.gdpo_reward_weights=${GDPO_REWARD_WEIGHTS}")' in code_script
+    assert "coding_code_extractability_reward" in code_script
+    assert "coding_syntax_validity_reward" in code_script
+    assert "coding_compiler_runtime_feedback" in code_script
+
+    assert 'gdpo|gdpo_reward)' in multi_script
+    assert 'REWARDS=("gdpo")' in multi_script
+
+
+def test_multi_experiment_runner_uses_renamed_train_scripts():
+    script = (PROJECT_DIR / "run_multiple_exp.sh").read_text()
+
+    assert 'MATH_SCRIPT="${DIR}/train_math.sh"' in script
+    assert 'CODE_SCRIPT="${DIR}/train_code.sh"' in script
+    assert 'run_grpo_math.sh' not in script
+    assert 'run_grpo.sh' not in script
+
+
+def test_train_scripts_share_save_frequency_interface():
+    math_script = (PROJECT_DIR / "train_math.sh").read_text()
+    code_script = (PROJECT_DIR / "train_code.sh").read_text()
+
+    for script in (math_script, code_script):
+        assert "--save_freq" in script
+        assert 'CLI_SAVE_FREQ=""' in script
+        assert "CLI_SAVE_FREQ=\"$2\"" in script
+        assert "SAVE_EVERY_STEPS=${CLI_SAVE_FREQ:-${SAVE_EVERY_STEPS:--1}}" in script
+        assert "MAX_ACTOR_CKPT_TO_KEEP=${MAX_ACTOR_CKPT_TO_KEEP:-5}" in script
+        assert "MAX_CRITIC_CKPT_TO_KEEP=${MAX_CRITIC_CKPT_TO_KEEP:-5}" in script
+        assert 'trainer.max_actor_ckpt_to_keep="${MAX_ACTOR_CKPT_TO_KEEP}"' in script
+        assert 'trainer.max_critic_ckpt_to_keep="${MAX_CRITIC_CKPT_TO_KEEP}"' in script
 
 
 def test_multi_experiment_runner_labels_code_benchmark_as_eurus():
