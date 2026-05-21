@@ -4,10 +4,10 @@ set -euo pipefail
 usage() {
   cat <<'EOF'
 Usage:
-  bash run_grpo.sh -reward {ori|pdar-ori|new|pd|pdar} -model {qwen3-4b|qwen3-8b|deepseek7b|custom} [options]
+  bash run_grpo.sh -reward {ori|pdar-ori|new|pd|pdar|pdpo} -model {qwen3-4b|qwen3-8b|deepseek7b|custom} [options]
 
 Options:
-  -reward, --reward         Reward preset: ori, pdar-ori, new, pd, pdar
+  -reward, --reward         Reward preset: ori, pdar-ori, new, pd, pdar, pdpo
   -model, --model           Model preset: qwen3-4b, qwen3-8b, deepseek-r1-1.5b, deepseek7b, custom
   -mode, --mode             Alias of -model
   -kl, --kl                 KL mode: loss, reward, none
@@ -177,6 +177,17 @@ case "${REWARD_KIND}" in
     REWARD_DEFAULT_GPU=2
     COMBINE_MODE="pdar"
     ADV_ESTIMATOR="pdar"
+    DEEPCODER_ENABLE_THOUGHT=${DEEPCODER_ENABLE_THOUGHT:-false}
+    DEEPCODER_BETA=${DEEPCODER_BETA:-0.0}
+    DEEPCODER_GAMMA=${DEEPCODER_GAMMA:-0.0}
+    CODING_ENABLE_SUB_REWARDS=${CODING_ENABLE_SUB_REWARDS:-true}
+    ;;
+  pdpo|pdpo_reward)
+    RUN_VARIANT="pdpo_reward"
+    REWARD_LABEL="pdpo"
+    REWARD_DEFAULT_GPU=2
+    COMBINE_MODE="pdar"
+    ADV_ESTIMATOR="pdpo"
     DEEPCODER_ENABLE_THOUGHT=${DEEPCODER_ENABLE_THOUGHT:-false}
     DEEPCODER_BETA=${DEEPCODER_BETA:-0.0}
     DEEPCODER_GAMMA=${DEEPCODER_GAMMA:-0.0}
@@ -393,7 +404,7 @@ EXP_NAME=${EXP_NAME:-"${DEFAULT_EXP_NAME}"}
 
 ADV_ESTIMATOR=${ADV_ESTIMATOR:-"grpo"}
 
-# PDAR hyperparameters (used when ADV_ESTIMATOR=pdar)
+# PDAR/PDPO hyperparameters
 PDAR_ETA_C=${PDAR_ETA_C:-0.05}
 PDAR_ETA_S=${PDAR_ETA_S:-0.01}
 PDAR_LAMBDA_C_MAX=${PDAR_LAMBDA_C_MAX:-1.0}
@@ -402,6 +413,11 @@ PDAR_TAU_C=${PDAR_TAU_C:-0.5}
 PDAR_TAU_S=${PDAR_TAU_S:-1.5}
 PDAR_SIGN_C=${PDAR_SIGN_C:-1.0}
 PDAR_SHARPNESS_EMA_ALPHA=${PDAR_SHARPNESS_EMA_ALPHA:-0.1}
+PDPO_BETA_TIE=${PDPO_BETA_TIE:-0.20}
+PDPO_BETA_SAME=${PDPO_BETA_SAME:-1.00}
+PDPO_LAMBDA_AUX=${PDPO_LAMBDA_AUX:-1.00}
+PDPO_MIN_AUX_STD=${PDPO_MIN_AUX_STD:-1e-6}
+PDPO_MIN_MAIN_STD=${PDPO_MIN_MAIN_STD:-1e-6}
 
 EVAL_EVERY_STEPS=${EVAL_EVERY_STEPS:-5}
 SAVE_EVERY_STEPS=${SAVE_EVERY_STEPS:-5}
@@ -782,6 +798,11 @@ CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES} python3 -m verl.trainer.main_ppo \
   ++reward_model.reward_kwargs.pdar_tau_s="${PDAR_TAU_S}" \
   ++reward_model.reward_kwargs.pdar_sign_c="${PDAR_SIGN_C}" \
   ++reward_model.reward_kwargs.pdar_sharpness_ema_alpha="${PDAR_SHARPNESS_EMA_ALPHA}" \
+  ++reward_model.reward_kwargs.pdpo_beta_tie="${PDPO_BETA_TIE}" \
+  ++reward_model.reward_kwargs.pdpo_beta_same="${PDPO_BETA_SAME}" \
+  ++reward_model.reward_kwargs.pdpo_lambda_aux="${PDPO_LAMBDA_AUX}" \
+  ++reward_model.reward_kwargs.pdpo_min_aux_std="${PDPO_MIN_AUX_STD}" \
+  ++reward_model.reward_kwargs.pdpo_min_main_std="${PDPO_MIN_MAIN_STD}" \
   algorithm.use_kl_in_reward="${USE_KL_IN_REWARD}" \
   algorithm.kl_penalty="${KL_PENALTY}" \
   algorithm.kl_ctrl.type="${KL_CTRL_TYPE}" \

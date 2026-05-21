@@ -141,7 +141,7 @@ def _estimator_name(adv_estimator: AdvantageEstimator | str) -> str:
 
 def _ensure_custom_adv_estimator_registered(adv_estimator: AdvantageEstimator | str) -> None:
     """Import local estimator registration hooks that are not part of core_algos."""
-    if _estimator_name(adv_estimator) != "pdar":
+    if _estimator_name(adv_estimator) not in {"pdar", "pdpo"}:
         return
     try:
         import pd_reward.pdar_init  # noqa: F401
@@ -165,6 +165,82 @@ def _reward_kwargs_from_config(config: Any) -> dict[str, Any]:
     custom_reward_cfg = reward_cfg.get("custom_reward_function", {})
     reward_kwargs.update(_plain_config_dict(custom_reward_cfg.get("reward_kwargs", {})))
     return reward_kwargs
+
+
+_PDPO_AUX_EXCLUDED_KEYS = {
+    "acc",
+    "any_pass",
+    "aux_reward_combined",
+    "aux_rewards",
+    "base_math_score",
+    "combined_reward",
+    "data_source",
+    "extra_info",
+    "index",
+    "main_reward",
+    "original_reward",
+    "partial_pass_rate",
+    "pred",
+    "prompt",
+    "reward",
+    "score",
+    "uid",
+}
+
+
+def _pdpo_reward_weight(name: str, reward_kwargs: dict[str, Any]) -> float:
+    candidates = [f"weight_{name}"]
+    if name.startswith("math_"):
+        candidates.append(f"math_weight_{name[len('math_'):]}")
+    if name.startswith("coding_"):
+        candidates.append(f"coding_weight_{name[len('coding_'):]}")
+    if name in {"thought", "action"}:
+        candidates.append(f"weight_{name}")
+
+    for key in candidates:
+        if key in reward_kwargs:
+            try:
+                return float(reward_kwargs[key])
+            except (TypeError, ValueError):
+                return 0.0
+    return 1.0
+
+
+def _pdpo_is_aux_key(name: str) -> bool:
+    return name not in _PDPO_AUX_EXCLUDED_KEYS and (
+        name.startswith("math_")
+        or name.startswith("coding_")
+        or name in {"thought", "action"}
+    )
+
+
+def _pdpo_numeric_values(values: Any, batch_size: int) -> Optional[np.ndarray]:
+    try:
+        arr = np.asarray(values, dtype=np.float32).reshape(-1)
+    except (TypeError, ValueError):
+        return None
+    if arr.size != batch_size:
+        return None
+    return np.nan_to_num(arr, nan=0.0, posinf=0.0, neginf=0.0)
+
+
+def _pdpo_aux_rewards_from_non_tensor(
+    non_tensor_batch: dict[str, Any],
+    reward_kwargs: Optional[dict[str, Any]],
+    batch_size: int,
+) -> dict[str, np.ndarray]:
+    """Collect per-channel scalar subrewards for PDPO advantage estimation."""
+    reward_kwargs = reward_kwargs or {}
+    aux_rewards: dict[str, np.ndarray] = {}
+    for key, values in non_tensor_batch.items():
+        if not _pdpo_is_aux_key(key):
+            continue
+        if _pdpo_reward_weight(key, reward_kwargs) <= 0.0:
+            continue
+        arr = _pdpo_numeric_values(values, batch_size)
+        if arr is not None:
+            aux_rewards[key] = arr
+    return aux_rewards
 
 
 def _annotate_reward_extra_info(data: DataProto, **fields: Any) -> None:
@@ -257,8 +333,16 @@ def compute_advantage(
         # PDAR: forward auxiliary reward tensor if present
         if "aux_token_level_scores" in data.batch:
             adv_kwargs["aux_rewards_tensor"] = data.batch["aux_token_level_scores"]
-        if _estimator_name(adv_estimator) == "pdar":
+        estimator_name = _estimator_name(adv_estimator)
+        if estimator_name == "pdar":
             adv_kwargs["pdar_config_dict"] = reward_kwargs or {}
+        if estimator_name == "pdpo":
+            adv_kwargs["pdpo_config_dict"] = reward_kwargs or {}
+            adv_kwargs["pdpo_aux_rewards_dict"] = _pdpo_aux_rewards_from_non_tensor(
+                data.non_tensor_batch,
+                reward_kwargs,
+                len(data),
+            )
         # GDPO: pass raw data for per-dimension reward extraction
         if adv_estimator in (AdvantageEstimator.GDPO, "gdpo"):
             adv_kwargs["non_tensor_batch"] = data.non_tensor_batch
@@ -1743,6 +1827,12 @@ class RayPPOTrainer:
                             from pdar_advantage import PDAR_METRICS
                             if PDAR_METRICS:
                                 metrics.update(PDAR_METRICS)
+                        except ImportError:
+                            pass
+                        try:
+                            from pdpo_advantage import PDPO_METRICS
+                            if PDPO_METRICS:
+                                metrics.update(PDPO_METRICS)
                         except ImportError:
                             pass
 

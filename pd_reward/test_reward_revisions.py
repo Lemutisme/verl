@@ -131,7 +131,28 @@ def test_deepcoder_pdar_ori_mode_uses_ori_reward_with_pdar_advantage():
 def test_run_multiple_exp_accepts_pdar_ori_filter_without_expanding_default_matrix():
     script = (CURRENT_DIR / "run_multiple_exp.sh").read_text()
 
-    assert "[-reward {pdar|pd|new|ori|pdar-ori}]" in script
+    assert "[-reward {pdar|pd|new|ori|pdar-ori|pdpo}]" in script
     assert 'REWARDS=("pdar" "pd" "new" "ori")' in script
     assert 'pdar-ori|pdar_ori|ori-pdar|ori_pdar|pdar_original)' in script
     assert 'REWARDS=("pdar-ori")' in script
+
+
+def test_pdpo_modes_are_available_but_not_added_to_default_matrix():
+    math_script = (CURRENT_DIR / "run_grpo_math.sh").read_text()
+    code_script = (CURRENT_DIR / "run_grpo.sh").read_text()
+    multi_script = (CURRENT_DIR / "run_multiple_exp.sh").read_text()
+
+    assert "pdpo" in math_script
+    assert 'REWARD_LABEL="pdpo"' in math_script
+    assert 'ADV_ESTIMATOR="pdpo"' in math_script
+    assert 'COMBINE_MODE="pdar"' in math_script
+
+    assert "pdpo" in code_script
+    assert 'REWARD_LABEL="pdpo"' in code_script
+    assert 'ADV_ESTIMATOR="pdpo"' in code_script
+    assert 'COMBINE_MODE="pdar"' in code_script
+
+    assert "[-reward {pdar|pd|new|ori|pdar-ori|pdpo}]" in multi_script
+    assert 'REWARDS=("pdar" "pd" "new" "ori")' in multi_script
+    assert 'pdpo|pdpo_reward)' in multi_script
+    assert 'REWARDS=("pdpo")' in multi_script
