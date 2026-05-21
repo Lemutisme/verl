@@ -1,7 +1,8 @@
 from typing import Any
 
-from ..common import to_float
+from ..common import response_text, to_float
 from .executable_verifier import cap_score_if_wrong, get_verification_report
+from .efficiency_utils import approx_token_count, efficiency_bounds, length_score
 
 
 def compute(ctx: dict[str, Any], **kwargs: Any) -> float:
@@ -22,5 +23,14 @@ def compute(ctx: dict[str, Any], **kwargs: Any) -> float:
     else:
         no_trailing_chatter = max(0.0, 1.0 - report.post_answer_tokens / post_answer_max)
 
-    score = 0.50 * valid_ratio + 0.30 * unique_ratio + 0.20 * no_trailing_chatter
+    _, default_max_tokens, _ = efficiency_bounds(ctx, kwargs)
+    soft_max_tokens = to_float(kwargs.get("math_trace_efficiency_soft_max_tokens"), default_max_tokens)
+    hard_max_tokens = to_float(
+        kwargs.get("math_trace_efficiency_hard_max_tokens"),
+        max(soft_max_tokens + 1.0, 3.0 * soft_max_tokens),
+    )
+    overall_length = length_score(approx_token_count(response_text(ctx)), soft_max_tokens, hard_max_tokens)
+
+    structural_score = 0.50 * valid_ratio + 0.30 * unique_ratio + 0.20 * no_trailing_chatter
+    score = structural_score * (0.25 + 0.75 * overall_length)
     return cap_score_if_wrong(ctx, score, kwargs)

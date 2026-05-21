@@ -10,7 +10,7 @@ group-normalised independently before aggregation.
 from __future__ import annotations
 
 from collections import defaultdict
-from dataclasses import asdict, dataclass, is_dataclass
+from dataclasses import asdict, dataclass, field, is_dataclass
 from typing import Any, Optional
 
 import numpy as np
@@ -29,10 +29,25 @@ class PDPOConfig:
     """Hyper-parameters for PDPO advantage estimation."""
 
     beta_tie: float = 0.20
-    beta_same: float = 1.00
-    lambda_aux: float = 1.00
+    beta_same: float = 0.70
+    lambda_aux: float = 0.70
     min_aux_std: float = 1e-6
     min_main_std: float = 1e-6
+    answer_gate_channel: str = "math_answer_extractability_reward"
+    answer_gate_min: float = 0.5
+    answer_gate_closed_scale: float = 0.0
+
+    correctness_safe: bool = True
+    correctness_margin: float = 1e-3
+
+    reliability_enabled: bool = True
+    reliability_ema_alpha: float = 0.05
+    reliability_min_scale: float = 0.0
+    reliability_max_scale: float = 1.0
+    reliability_target_margin: float = 0.02
+    reliability_negative_tolerance: float = 0.02
+    reliability_wrong_high_threshold: float = 0.30
+    reliability_wrong_high_target: float = 0.20
 
     eta_s: float = 0.01
     lambda_s_max: float = 2.0
@@ -62,11 +77,7 @@ class PDPOConfig:
                 short = aliases.get(candidate, candidate)
                 if short not in field_names:
                     continue
-                target_type = type(getattr(cls, short))
-                try:
-                    filtered[short] = target_type(value)
-                except (TypeError, ValueError):
-                    filtered[short] = value
+                filtered[short] = _coerce_config_value(value, getattr(cls, short))
 
         return cls(**filtered)
 
@@ -76,6 +87,7 @@ class PDPOState:
     lambda_s: float = 0.0
     sharpness_ema: float = 0.0
     step: int = 0
+    channel_reliability: dict[str, float] = field(default_factory=dict)
 
 
 _PDPO_STATE: Optional[PDPOState] = None
@@ -134,6 +146,37 @@ def _to_float(value: Any, default: float) -> float:
         return float(value)
     except (TypeError, ValueError):
         return default
+
+
+def _to_bool(value: Any, default: bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"1", "true", "yes", "y", "on"}:
+            return True
+        if lowered in {"0", "false", "no", "n", "off"}:
+            return False
+    if value is None:
+        return default
+    try:
+        return bool(int(value))
+    except (TypeError, ValueError):
+        return default
+
+
+def _coerce_config_value(value: Any, default_value: Any) -> Any:
+    if isinstance(default_value, bool):
+        return _to_bool(value, default_value)
+    target_type = type(default_value)
+    try:
+        return target_type(value)
+    except (TypeError, ValueError):
+        return value
+
+
+def _clamp(value: float, low: float, high: float) -> float:
+    return max(low, min(value, high))
 
 
 def _channel_weight(name: str, config_dict: dict[str, Any]) -> float:
@@ -202,6 +245,170 @@ def _update_sharpness_dual(state: PDPOState, cfg: PDPOConfig, current_sharpness:
     state.step += 1
 
 
+def _channel_reliability_stats(
+    aux_scores: torch.Tensor,
+    main_scores: torch.Tensor,
+    id2indices: dict[Any, list[int]],
+    cfg: PDPOConfig,
+    eps: float,
+) -> dict[str, float]:
+    correct_chunks: list[torch.Tensor] = []
+    wrong_chunks: list[torch.Tensor] = []
+    supporting_groups = 0
+    comparable_groups = 0
+
+    for idxs in id2indices.values():
+        if len(idxs) <= 1:
+            continue
+        idx_tensor = torch.tensor(idxs, device=main_scores.device)
+        group_main = main_scores[idx_tensor]
+        if group_main.std().item() <= cfg.min_main_std:
+            continue
+
+        best_main = group_main.max()
+        correct_mask = torch.isclose(group_main, best_main, atol=eps, rtol=0.0)
+        wrong_mask = ~correct_mask
+        if not correct_mask.any().item() or not wrong_mask.any().item():
+            continue
+
+        group_aux = aux_scores[idx_tensor]
+        correct_aux = group_aux[correct_mask]
+        wrong_aux = group_aux[wrong_mask]
+        correct_chunks.append(correct_aux)
+        wrong_chunks.append(wrong_aux)
+        comparable_groups += 1
+        if correct_aux.mean().item() + eps >= wrong_aux.mean().item():
+            supporting_groups += 1
+
+    if not comparable_groups:
+        return {
+            "comparable_groups": 0.0,
+            "correct_mean": 0.0,
+            "wrong_mean": 0.0,
+            "correct_minus_wrong": 0.0,
+            "wrong_high_rate": 0.0,
+            "supports_correct_rate": 0.0,
+            "batch_reliability": 1.0,
+        }
+
+    correct_values = torch.cat(correct_chunks)
+    wrong_values = torch.cat(wrong_chunks)
+    correct_mean = float(correct_values.mean().item())
+    wrong_mean = float(wrong_values.mean().item())
+    gap = correct_mean - wrong_mean
+    wrong_high_rate = float((wrong_values >= cfg.reliability_wrong_high_threshold).float().mean().item())
+    supports_correct_rate = supporting_groups / comparable_groups
+
+    target_margin = max(cfg.reliability_target_margin, eps)
+    gap_scale = _clamp((gap + cfg.reliability_negative_tolerance) / target_margin, 0.0, 1.0)
+    wrong_high_target = _clamp(cfg.reliability_wrong_high_target, 0.0, 1.0)
+    if wrong_high_target >= 1.0:
+        wrong_high_penalty = 1.0
+    else:
+        excess_high = max(0.0, wrong_high_rate - wrong_high_target)
+        wrong_high_penalty = _clamp(1.0 - excess_high / max(1.0 - wrong_high_target, eps), 0.0, 1.0)
+    batch_reliability = _clamp(gap_scale * wrong_high_penalty, 0.0, 1.0)
+
+    return {
+        "comparable_groups": float(comparable_groups),
+        "correct_mean": correct_mean,
+        "wrong_mean": wrong_mean,
+        "correct_minus_wrong": gap,
+        "wrong_high_rate": wrong_high_rate,
+        "supports_correct_rate": float(supports_correct_rate),
+        "batch_reliability": batch_reliability,
+    }
+
+
+def _effective_channel_weight(
+    state: PDPOState,
+    cfg: PDPOConfig,
+    name: str,
+    base_weight: float,
+    stats: dict[str, float],
+) -> tuple[float, float]:
+    old_reliability = state.channel_reliability.get(name, 1.0)
+    reliability = old_reliability
+    if cfg.reliability_enabled and stats["comparable_groups"] > 0.0:
+        alpha = _clamp(cfg.reliability_ema_alpha, 0.0, 1.0)
+        reliability = (1.0 - alpha) * old_reliability + alpha * stats["batch_reliability"]
+        reliability = _clamp(reliability, cfg.reliability_min_scale, cfg.reliability_max_scale)
+        state.channel_reliability[name] = reliability
+    elif name not in state.channel_reliability:
+        state.channel_reliability[name] = reliability
+
+    scale = reliability if cfg.reliability_enabled else 1.0
+    return base_weight * scale, reliability
+
+
+def _combine_correctness_safe(
+    main_adv: torch.Tensor,
+    aux_component: torch.Tensor,
+    main_scores: torch.Tensor,
+    id2indices: dict[Any, list[int]],
+    cfg: PDPOConfig,
+    eps: float,
+) -> tuple[torch.Tensor, int, float]:
+    combined = main_adv + aux_component
+    if not cfg.correctness_safe:
+        return combined, 0, 0.0
+
+    safe = combined.clone()
+    clamp_count = 0
+    margins: list[float] = []
+    margin = max(0.0, cfg.correctness_margin)
+
+    for idxs in id2indices.values():
+        if len(idxs) <= 1:
+            continue
+        idx_tensor = torch.tensor(idxs, device=main_scores.device)
+        group_main = main_scores[idx_tensor]
+        if group_main.std().item() <= cfg.min_main_std:
+            continue
+
+        unique_scores = torch.unique(group_main.detach(), sorted=True)
+        if unique_scores.numel() <= 1:
+            continue
+
+        group_main_adv = main_adv[idx_tensor]
+        group_aux = aux_component[idx_tensor]
+        bucket_aux = torch.zeros_like(group_aux)
+        bucket_masks: list[torch.Tensor] = []
+        for score in unique_scores:
+            bucket_mask = torch.isclose(group_main, score, atol=eps, rtol=0.0)
+            bucket_masks.append(bucket_mask)
+            values = group_aux[bucket_mask]
+            bucket_aux[bucket_mask] = values - values.mean()
+
+        scale = 1.0
+        for lower_mask, upper_mask in zip(bucket_masks, bucket_masks[1:]):
+            lower_base = group_main_adv[lower_mask].mean().item()
+            upper_base = group_main_adv[upper_mask].mean().item()
+            base_gap = upper_base - lower_base
+            overlap = bucket_aux[lower_mask].max().item() - bucket_aux[upper_mask].min().item()
+            allowed = base_gap - margin
+            if allowed <= 0.0:
+                local_scale = 0.0
+            elif overlap > allowed:
+                local_scale = allowed / (overlap + eps)
+            else:
+                local_scale = 1.0
+            scale = min(scale, _clamp(local_scale, 0.0, 1.0))
+
+        if scale < 1.0 - 1e-6:
+            clamp_count += 1
+
+        group_safe = group_main_adv + bucket_aux * scale
+        for lower_mask, upper_mask in zip(bucket_masks, bucket_masks[1:]):
+            lower_max = group_safe[lower_mask].max().item()
+            upper_min = group_safe[upper_mask].min().item()
+            margins.append(upper_min - lower_max)
+        safe[idx_tensor] = group_safe
+
+    min_margin = min(margins) if margins else 0.0
+    return safe, clamp_count, min_margin
+
+
 @register_adv_est("pdpo")
 def compute_pdpo_advantage(
     token_level_rewards: torch.Tensor,
@@ -246,6 +453,16 @@ def compute_pdpo_advantage(
     if not aux_sources and aux_rewards_tensor is not None:
         aux_sources["aux_tensor"] = aux_rewards_tensor
 
+    gate_name = str(config_dict.get("pdpo_answer_gate_channel", cfg.answer_gate_channel))
+    gate_scores = None
+    if gate_name in aux_sources:
+        gate_scores = _to_scalar_tensor(
+            aux_sources[gate_name],
+            bsz=bsz,
+            device=token_level_rewards.device,
+            dtype=token_level_rewards.dtype,
+        )
+
     aux_adv_sum = torch.zeros_like(main_adv)
     aux_raw_sum = torch.zeros_like(main_adv)
     active_channels = 0
@@ -256,8 +473,8 @@ def compute_pdpo_advantage(
     for name in sorted(aux_sources):
         if name != "aux_tensor" and not _is_aux_channel(name):
             continue
-        weight = _channel_weight(name, config_dict)
-        if weight <= 0.0:
+        base_weight = _channel_weight(name, config_dict)
+        if base_weight <= 0.0:
             continue
 
         aux_scores = _to_scalar_tensor(
@@ -267,6 +484,35 @@ def compute_pdpo_advantage(
             dtype=token_level_rewards.dtype,
         )
         if aux_scores is None:
+            continue
+
+        if gate_scores is not None and name != gate_name:
+            gate_mask = gate_scores >= cfg.answer_gate_min
+            closed_scale = max(0.0, min(1.0, cfg.answer_gate_closed_scale))
+            aux_scores = torch.where(gate_mask, aux_scores, aux_scores * closed_scale)
+
+        reliability_stats = _channel_reliability_stats(aux_scores, main_scores, id2indices, cfg, eps)
+        effective_weight, reliability = _effective_channel_weight(
+            state,
+            cfg,
+            name,
+            base_weight,
+            reliability_stats,
+        )
+        metric_name = name.replace("/", "_")
+        channel_metrics[f"pdpo/channel/{metric_name}/weight"] = float(base_weight)
+        channel_metrics[f"pdpo/channel/{metric_name}/effective_weight"] = float(effective_weight)
+        channel_metrics[f"pdpo/channel/{metric_name}/reliability"] = float(reliability)
+        channel_metrics[f"pdpo/channel/{metric_name}/batch_reliability"] = reliability_stats["batch_reliability"]
+        channel_metrics[f"pdpo/channel/{metric_name}/correct_mean"] = reliability_stats["correct_mean"]
+        channel_metrics[f"pdpo/channel/{metric_name}/wrong_mean"] = reliability_stats["wrong_mean"]
+        channel_metrics[f"pdpo/channel/{metric_name}/correct_minus_wrong"] = reliability_stats["correct_minus_wrong"]
+        channel_metrics[f"pdpo/channel/{metric_name}/wrong_high_rate"] = reliability_stats["wrong_high_rate"]
+        channel_metrics[f"pdpo/channel/{metric_name}/supports_correct_rate"] = reliability_stats["supports_correct_rate"]
+        channel_metrics[f"pdpo/channel/{metric_name}/comparable_groups"] = reliability_stats["comparable_groups"]
+        channel_metrics[f"pdpo/channel/{metric_name}/mean"] = float(aux_scores.mean().item())
+
+        if effective_weight <= 0.0:
             continue
 
         active_mask = _active_group_mask(aux_scores, id2indices, cfg.min_aux_std)
@@ -280,18 +526,15 @@ def compute_pdpo_advantage(
             eps=eps,
         )
         aux_adv = torch.where(active_mask, aux_adv, torch.zeros_like(aux_adv))
-        aux_adv_sum = aux_adv_sum + weight * aux_adv
-        aux_raw_sum = aux_raw_sum + weight * aux_scores
+        aux_adv_sum = aux_adv_sum + effective_weight * aux_adv
+        aux_raw_sum = aux_raw_sum + effective_weight * aux_scores
         active_channels += 1
-        weight_sum += weight
+        weight_sum += effective_weight
 
         active_group_count += sum(
             1 for idxs in id2indices.values()
             if len(idxs) > 1 and aux_scores[torch.tensor(idxs, device=aux_scores.device)].std().item() > cfg.min_aux_std
         )
-        metric_name = name.replace("/", "_")
-        channel_metrics[f"pdpo/channel/{metric_name}/weight"] = float(weight)
-        channel_metrics[f"pdpo/channel/{metric_name}/mean"] = float(aux_scores.mean().item())
 
     main_active_mask = _active_group_mask(main_scores, id2indices, cfg.min_main_std)
     beta = torch.where(
@@ -299,7 +542,15 @@ def compute_pdpo_advantage(
         torch.full_like(main_adv, cfg.beta_tie),
         torch.full_like(main_adv, cfg.beta_same),
     )
-    combined_adv = main_adv + cfg.lambda_aux * beta * aux_adv_sum
+    aux_component = cfg.lambda_aux * beta * aux_adv_sum
+    combined_adv, safety_clamp_count, correctness_margin_min = _combine_correctness_safe(
+        main_adv,
+        aux_component,
+        main_scores,
+        id2indices,
+        cfg,
+        eps,
+    )
 
     group_stds_before: list[float] = []
     group_stds_after: list[float] = []
@@ -332,8 +583,14 @@ def compute_pdpo_advantage(
         "pdpo/beta_tie": cfg.beta_tie,
         "pdpo/beta_same": cfg.beta_same,
         "pdpo/lambda_aux": cfg.lambda_aux,
+        "pdpo/correctness_safe": float(cfg.correctness_safe),
+        "pdpo/correctness_safe_clamp_count": float(safety_clamp_count),
+        "pdpo/correctness_margin_min": float(correctness_margin_min),
+        "pdpo/reliability_enabled": float(cfg.reliability_enabled),
         "pdpo/step": float(state.step),
     }
+    if gate_scores is not None:
+        PDPO_METRICS["pdpo/answer_gate_open_ratio"] = float((gate_scores >= cfg.answer_gate_min).float().mean().item())
     PDPO_METRICS.update(channel_metrics)
 
     return advantages, advantages

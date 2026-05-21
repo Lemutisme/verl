@@ -48,8 +48,8 @@ DEFAULT_WEIGHTS = {
         "consistency_reward": 0.0,
         "executable_unit_pass_rate_reward": 0.0,
         "step_arithmetic_validity_reward": 0.35,
-        "prefix_consistency_reward": 0.25,
-        "trace_efficiency_reward": 0.25,
+        "prefix_consistency_reward": 0.15,
+        "trace_efficiency_reward": 0.35,
         "answer_extractability_reward": 0.15,
     },
 }

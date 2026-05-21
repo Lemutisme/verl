@@ -17,7 +17,7 @@ from reward_score.primal_dual_core import GenericRewardCombiner
 from reward_score.sub_reward import collect_subrewards, weight_overrides, to_bool, clip
 import reward_score.coding_executable_reward as coding_evaluator
 
-# Register PDAR advantage estimator when this module is imported
+# Register local advantage estimators when this module is imported
 try:
     import pdar_init  # noqa: F401 — triggers @register_adv_est("pdar")
 except ImportError:
@@ -86,6 +86,10 @@ def _global_step(extra_info: Any) -> int:
 
 def _should_update_dual(extra_info: Any) -> bool:
     return not to_bool(_extra_info_dict(extra_info).get("is_validation", False), False)
+
+
+def _is_advantage_aux_mode(combine_mode: str) -> bool:
+    return combine_mode in {"pdpo", "pdar"}
 
 
 def _subreward_weight(name: str, kwargs: dict[str, Any]) -> float:
@@ -380,8 +384,8 @@ def _score_math(data_source, solution_str, ground_truth, extra_info=None, **kwar
                 base_res = signed_score
         return base_res
 
-    # --- PDAR mode: return separate channels, skip reward-level combination ---
-    if combine_mode == "pdar":
+    # Advantage-level process modes return separate channels and skip reward-level combination.
+    if _is_advantage_aux_mode(combine_mode):
         info = _pdar_reward_info(
             1.0 if base_acc else 0.0,
             subrewards,
@@ -443,7 +447,7 @@ def compute_score(data_source, solution_str, ground_truth, extra_info=None, **kw
             main_reward, subrewards = res
             res = {"main_reward": main_reward, "subrewards": subrewards}
 
-        if combine_mode == "pdar":
+        if _is_advantage_aux_mode(combine_mode):
             if isinstance(res, list):
                 return [
                     _coding_pdar_reward_info(r["main_reward"], r["subrewards"], kwargs)
@@ -488,7 +492,7 @@ def compute_score(data_source, solution_str, ground_truth, extra_info=None, **kw
             main_reward, subrewards = res
             res = {"main_reward": main_reward, "subrewards": subrewards}
 
-        if combine_mode == "pdar":
+        if _is_advantage_aux_mode(combine_mode):
             if isinstance(res, list):
                 return [
                     _coding_pdar_reward_info(r["main_reward"], r["subrewards"], kwargs)

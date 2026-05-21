@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 # run_multiple_exp.sh
-# Usage: bash run_multiple_exp.sh [-gpus xx] [-steps N] [-reward {pdar|pd|new|ori|pdar-ori|pdpo}] [-save]
+# Usage: bash run_multiple_exp.sh [-gpus xx] [-steps N] [-reward {pdpo|new|ori}] [-save]
 
 # Default values
 GPUS=""
@@ -14,12 +14,12 @@ DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 usage() {
   cat <<'EOF'
 Usage:
-  bash run_multiple_exp.sh [-gpus xx] [-steps N] [-reward {pdar|pd|new|ori|pdar-ori|pdpo}] [-save] [--cleanup-ray-vllm]
+  bash run_multiple_exp.sh [-gpus xx] [-steps N] [-reward {pdpo|new|ori}] [-save] [--cleanup-ray-vllm]
 
 Options:
   -gpus, --gpus             GPU ids to pass to child runs, e.g. 0 or 0,1
   -steps, --steps           Total training steps for each child run (default: 400)
-  -reward, --reward         Run only one reward preset: pdar, pd, new, ori, pdar-ori, or pdpo
+  -reward, --reward         Run only one reward preset: pdpo, new, or ori
   -save, --save             Enable model checkpoint saving for child runs
   --cleanup-ray-vllm        Stop local Ray and kill vLLM before/after tasks
   -h, --help                Show this help message
@@ -73,17 +73,14 @@ while [[ $# -gt 0 ]]; do
 done
 
 # 1. Experiment Matrix
-REWARDS=("pdar" "pd" "new" "ori")
+REWARDS=("pdpo" "new" "ori")
 if [ -n "$REWARD_FILTER" ]; then
     case "$REWARD_FILTER" in
-        pdar|pd|new|ori)
-            REWARDS=("$REWARD_FILTER")
-            ;;
-        pdar-ori|pdar_ori|ori-pdar|ori_pdar|pdar_original)
-            REWARDS=("pdar-ori")
-            ;;
         pdpo|pdpo_reward)
             REWARDS=("pdpo")
+            ;;
+        new|ori)
+            REWARDS=("$REWARD_FILTER")
             ;;
         *)
             echo "[ERROR] Unsupported reward preset: ${REWARD_FILTER}" >&2

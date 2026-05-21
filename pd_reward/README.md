@@ -1,6 +1,6 @@
-# PDPO / PDAR Reward and Advantage Experiments
+# PDPO Reward and Advantage Experiments
 
-This directory contains the reward functions, advantage estimators, launch scripts, and tests for the PD/PDAR/PDPO experiments on math and coding tasks.
+This directory contains the reward functions, advantage estimators, launch scripts, and tests for the PDPO experiments on math and coding tasks.
 
 The current main method is **PDPO (Process-Distance Policy Optimization)**:
 
@@ -14,15 +14,12 @@ This is intentionally different from simply adding more reward terms. PDPO chang
 |---|---|---|---|---|
 | Vanilla GRPO | `-reward ori` | original reward only | `grpo` | baseline |
 | Static subreward mix | `-reward new` | scalarized main + aux | `grpo` | fixed reward shaping |
-| Reward-level PD | `-reward pd` | adaptive scalarized main + aux | `grpo` | primal-dual reward shaping |
-| PDAR | `-reward pdar` | main + aux exported separately | `pdar` | advantage-level aux regulation |
-| PDAR-ORI | `-reward pdar-ori` | original reward only | `pdar` | original reward with PDAR geometry |
-| **PDPO** | `-reward pdpo` | original/main reward as anchor, aux exported separately | `pdpo` | correctness-anchored process advantage estimation |
+| **PDPO** | `-reward pdpo` | original/main reward as anchor, aux exported separately | `pdpo` | correctness-safe, reliability-aware process advantage estimation |
 
-`run_multiple_exp.sh` still defaults to the older matrix:
+`run_multiple_exp.sh` now defaults to the active matrix:
 
 ```bash
-REWARDS=("pdar" "pd" "new" "ori")
+REWARDS=("pdpo" "new" "ori")
 ```
 
 Run PDPO explicitly with:
@@ -33,7 +30,7 @@ bash run_multiple_exp.sh -gpus 5 -reward pdpo
 
 ## Is PDPO Fundamental?
 
-Short answer: **yes, relative to GRPO/GDPO/PDAR, PDPO is the more fundamental formulation for our setting**. The reason is that the real bottleneck is not only reward design; it is sparse-outcome **advantage identifiability**.
+Short answer: **yes, relative to GRPO/GDPO/reward mixing, PDPO is the more fundamental formulation for our setting**. The reason is that the real bottleneck is not only reward design; it is sparse-outcome **advantage identifiability**.
 
 ### What GRPO Fails To See
 
@@ -90,23 +87,29 @@ Then:
 $$
 A_i^{PDPO}
 = A_i^{main}
-+ \lambda_{aux} \cdot \beta_G \sum_k w_k m_{G,k} A_{i,k}^{aux}
++ \lambda_{aux} \cdot \beta_G \sum_k w_k \rho_k m_{G,k} A_{i,k}^{aux}
 $$
 
 where:
 
 - `m_{G,k}=1` only when auxiliary channel `k` has non-trivial group variance.
+- `rho_k` is a per-channel reliability scale from recent mixed-outcome groups.
 - `beta_G = beta_same` when the main reward is flat inside the group.
 - `beta_G = beta_tie` when the main reward already distinguishes samples.
+- Math PDPO gates non-answer auxiliary channels with `math_answer_extractability_reward` by default, so traces without an
+  extractable answer do not get full process-advantage credit.
+- Mixed-outcome groups use strict correctness safety: aux can rank samples within the same main-reward bucket, but cannot move a lower-main-reward sample above a higher-main-reward sample.
 
 Default behavior:
 
 ```bash
-PDPO_BETA_SAME=1.00   # aux can guide all-wrong / tied groups
+PDPO_BETA_SAME=0.70   # aux can guide all-wrong / tied groups, but less aggressively
 PDPO_BETA_TIE=0.20    # aux is only a weak tie-breaker when correctness varies
-PDPO_LAMBDA_AUX=1.00
+PDPO_LAMBDA_AUX=0.70
 PDPO_MIN_AUX_STD=1e-6
 PDPO_MIN_MAIN_STD=1e-6
+PDPO_CORRECTNESS_SAFE=true
+PDPO_RELIABILITY_ENABLED=true
 ```
 
 This makes PDPO more fundamental than plain reward shaping because it addresses the actual failure mode:
@@ -115,7 +118,7 @@ This makes PDPO more fundamental than plain reward shaping because it addresses 
 
 ### Limits
 
-PDPO is not a formal guarantee. It relies on process subrewards being directionally useful. If a subreward is noisy, saturated, or anti-correlated with final correctness, PDPO can still inject bad gradient. The current implementation uses group variance masks and fixed channel weights; future improvements can add adaptive reliability/correlation gates.
+PDPO is not a formal convergence guarantee. It now protects the main correctness ordering in mixed-outcome groups and downweights anti-aligned process channels, but it still depends on having at least some directionally useful process signals in flat all-wrong/all-correct groups.
 
 ## Implementation
 
@@ -126,16 +129,13 @@ PDPO is not a formal guarantee. It relies on process subrewards being directiona
 - `score`: the scalar reward used as the main token-level reward.
 - `main_reward`: original/main task reward.
 - flattened subreward keys such as `math_step_arithmetic_validity_reward` or `coding_compiler_runtime_feedback`.
-- `aux_reward_combined`: retained for PDAR compatibility.
+- `aux_reward_combined`: retained for legacy compatibility.
 
 For PDPO, the trainer ignores `aux_reward_combined` and reads the flattened per-channel subrewards.
 
 ### Trainer Path
 
-[ray_trainer.py](/shared/nas2/yujiz/rl/verl/verl/trainer/ppo/ray_trainer.py) registers local estimators for:
-
-- `pdar`
-- `pdpo`
+[ray_trainer.py](/shared/nas2/yujiz/rl/verl/verl/trainer/ppo/ray_trainer.py) registers the local `pdpo` estimator. The legacy `pdar` estimator still exists in the tree for old checkpoints/scripts, but new runs should use only `pdpo`, `new`, or `ori`.
 
 For `pdpo`, it extracts numeric aux channels from `data.non_tensor_batch`:
 
@@ -149,9 +149,10 @@ For `pdpo`, it extracts numeric aux channels from `data.non_tensor_batch`:
 1. group-normalize main reward.
 2. group-normalize each auxiliary channel independently.
 3. skip auxiliary channels with no group variance.
-4. use strong auxiliary guidance only when main reward is flat.
-5. use weak auxiliary guidance when main reward already has signal.
-6. apply the existing selective sharpness damping controller.
+4. estimate per-channel reliability from mixed-outcome groups.
+5. preserve main-reward ordering in mixed-outcome groups with strict no-crossing.
+6. use auxiliary guidance freely only when main reward is flat, and only within same-main buckets otherwise.
+7. apply the existing selective sharpness damping controller.
 
 Metrics emitted include:
 
@@ -164,8 +165,13 @@ Metrics emitted include:
 - `pdpo/beta_tie`
 - `pdpo/beta_same`
 - `pdpo/lambda_aux`
+- `pdpo/correctness_safe_clamp_count`
+- `pdpo/correctness_margin_min`
 - per-channel `pdpo/channel/<name>/mean`
 - per-channel `pdpo/channel/<name>/weight`
+- per-channel `pdpo/channel/<name>/effective_weight`
+- per-channel `pdpo/channel/<name>/reliability`
+- per-channel `pdpo/channel/<name>/wrong_high_rate`
 
 ## Usage
 
@@ -210,8 +216,6 @@ bash data_preprocess/prepare_data.sh
 bash run_multiple_exp.sh -gpus 5 -reward pdpo
 ```
 
-`pdpo` is intentionally not added to the default matrix to avoid silently expanding long-running experiment sweeps.
-
 The multi-experiment runner currently sweeps math on DeepScaleR and code on Eurus.
 
 ## Recommended Defaults
@@ -229,9 +233,9 @@ MATH_ENABLE_EXECUTABLE_UNIT_PASS_RATE_REWARD=false
 MATH_ENABLE_STEP_ARITHMETIC_VALIDITY_REWARD=true
 MATH_WEIGHT_STEP_ARITHMETIC_VALIDITY_REWARD=0.35
 MATH_ENABLE_PREFIX_CONSISTENCY_REWARD=true
-MATH_WEIGHT_PREFIX_CONSISTENCY_REWARD=0.25
+MATH_WEIGHT_PREFIX_CONSISTENCY_REWARD=0.15
 MATH_ENABLE_TRACE_EFFICIENCY_REWARD=true
-MATH_WEIGHT_TRACE_EFFICIENCY_REWARD=0.25
+MATH_WEIGHT_TRACE_EFFICIENCY_REWARD=0.35
 MATH_ENABLE_ANSWER_EXTRACTABILITY_REWARD=true
 MATH_WEIGHT_ANSWER_EXTRACTABILITY_REWARD=0.15
 ```
@@ -262,55 +266,52 @@ CODING_WEIGHT_BLOCK_LEVEL_PROCESS_REWARD=0.0
 
 | Env var | Hydra key | Default | Meaning |
 |---|---|---:|---|
-| `PDPO_BETA_SAME` | `reward_model.reward_kwargs.pdpo_beta_same` | `1.00` | Aux strength when main reward is flat in group |
+| `PDPO_BETA_SAME` | `reward_model.reward_kwargs.pdpo_beta_same` | `0.70` | Aux strength when main reward is flat in group |
 | `PDPO_BETA_TIE` | `reward_model.reward_kwargs.pdpo_beta_tie` | `0.20` | Aux strength when main reward already varies |
-| `PDPO_LAMBDA_AUX` | `reward_model.reward_kwargs.pdpo_lambda_aux` | `1.00` | Global multiplier for aux advantages |
+| `PDPO_LAMBDA_AUX` | `reward_model.reward_kwargs.pdpo_lambda_aux` | `0.70` | Global multiplier for aux advantages |
 | `PDPO_MIN_AUX_STD` | `reward_model.reward_kwargs.pdpo_min_aux_std` | `1e-6` | Minimum group std for an aux channel to be active |
 | `PDPO_MIN_MAIN_STD` | `reward_model.reward_kwargs.pdpo_min_main_std` | `1e-6` | Minimum main-reward group std to treat main as informative |
-
-PDPO also reuses sharpness damping knobs:
-
-| Env var | Hydra key | Default | Meaning |
-|---|---|---:|---|
-| `PDAR_ETA_S` | `reward_model.reward_kwargs.pdar_eta_s` | `0.01` | Sharpness dual step size |
-| `PDAR_LAMBDA_S_MAX` | `reward_model.reward_kwargs.pdar_lambda_s_max` | `2.0` | Max damping strength |
-| `PDAR_TAU_S` | `reward_model.reward_kwargs.pdar_tau_s` | `1.5` | Target group advantage std |
-| `PDAR_SHARPNESS_EMA_ALPHA` | `reward_model.reward_kwargs.pdar_sharpness_ema_alpha` | `0.1` | EMA smoothing |
+| `PDPO_ANSWER_GATE_MIN` | `reward_model.reward_kwargs.pdpo_answer_gate_min` | `0.5` | Minimum answer-extractability score needed for full non-answer aux credit |
+| `PDPO_ANSWER_GATE_CLOSED_SCALE` | `reward_model.reward_kwargs.pdpo_answer_gate_closed_scale` | `0.0` | Multiplier for non-answer aux channels when the answer gate is closed |
+| `PDPO_CORRECTNESS_SAFE` | `reward_model.reward_kwargs.pdpo_correctness_safe` | `true` | Preserve main-reward ordering in mixed-outcome groups |
+| `PDPO_CORRECTNESS_MARGIN` | `reward_model.reward_kwargs.pdpo_correctness_margin` | `1e-3` | Minimum gap between adjacent main-reward buckets after aux shaping |
+| `PDPO_RELIABILITY_ENABLED` | `reward_model.reward_kwargs.pdpo_reliability_enabled` | `true` | Enable per-channel reliability scaling |
+| `PDPO_RELIABILITY_EMA_ALPHA` | `reward_model.reward_kwargs.pdpo_reliability_ema_alpha` | `0.05` | EMA update rate for reliability |
+| `PDPO_RELIABILITY_MIN_SCALE` | `reward_model.reward_kwargs.pdpo_reliability_min_scale` | `0.0` | Lower bound for reliability scale |
+| `PDPO_RELIABILITY_MAX_SCALE` | `reward_model.reward_kwargs.pdpo_reliability_max_scale` | `1.0` | Upper bound for reliability scale |
+| `PDPO_RELIABILITY_TARGET_MARGIN` | `reward_model.reward_kwargs.pdpo_reliability_target_margin` | `0.02` | Correct-minus-wrong aux gap that reaches full reliability |
+| `PDPO_RELIABILITY_NEGATIVE_TOLERANCE` | `reward_model.reward_kwargs.pdpo_reliability_negative_tolerance` | `0.02` | Anti-correlation tolerance before strong downweighting |
+| `PDPO_RELIABILITY_WRONG_HIGH_THRESHOLD` | `reward_model.reward_kwargs.pdpo_reliability_wrong_high_threshold` | `0.30` | Aux score treated as high on wrong samples |
+| `PDPO_RELIABILITY_WRONG_HIGH_TARGET` | `reward_model.reward_kwargs.pdpo_reliability_wrong_high_target` | `0.20` | Wrong high-rate tolerated before downweighting |
+| `PDPO_ETA_S` | `reward_model.reward_kwargs.pdpo_eta_s` | `0.01` | Sharpness dual step size |
+| `PDPO_LAMBDA_S_MAX` | `reward_model.reward_kwargs.pdpo_lambda_s_max` | `2.0` | Max damping strength |
+| `PDPO_TAU_S` | `reward_model.reward_kwargs.pdpo_tau_s` | `1.5` | Target group advantage std |
+| `PDPO_SHARPNESS_EMA_ALPHA` | `reward_model.reward_kwargs.pdpo_sharpness_ema_alpha` | `0.1` | EMA smoothing |
 
 Example:
 
 ```bash
-PDPO_BETA_TIE=0.10 PDPO_BETA_SAME=0.80 \
+PDPO_BETA_TIE=0.10 PDPO_BETA_SAME=0.70 \
   bash run_grpo_math.sh -reward pdpo -dataset general365 -gpus 5
 ```
-
-### PDAR
-
-| Env var | Hydra key | Default | Meaning |
-|---|---|---:|---|
-| `PDAR_ETA_C` | `reward_model.reward_kwargs.pdar_eta_c` | `0.05` | Constraint dual step size |
-| `PDAR_LAMBDA_C_MAX` | `reward_model.reward_kwargs.pdar_lambda_c_max` | `1.0` | Max aux dual |
-| `PDAR_TAU_C` | `reward_model.reward_kwargs.pdar_tau_c` | `0.5` | Target mean aux reward |
-| `PDAR_SIGN_C` | `reward_model.reward_kwargs.pdar_sign_c` | `1.0` | Direction of aux constraint |
 
 ## Positioning
 
 | Method | Main Problem Solved | Remaining Problem |
 |---|---|---|
 | GRPO | Simple outcome-relative policy optimization | no signal in flat sparse-reward groups |
-| Reward-level PD | adaptive reward shaping | changes objective; scalarization interacts with GRPO normalization |
+| Static reward mixing | fixed process reward shaping | changes objective; scalarization interacts with GRPO normalization |
 | GDPO | decoupled per-channel normalization | fixed weights can fight correctness |
-| PDAR | advantage-level aux regulation with damping | current aux path is mostly one combined aux signal |
-| **PDPO** | correctness-anchored process advantage estimation | still needs reliable process signals |
+| **PDPO** | correctness-safe per-channel process advantage estimation | still needs useful process signals in flat groups |
 
 ## Files
 
 ```text
 pd_reward/
 ├── custom_reward.py              # Reward entry point and flattened reward extras
-├── pdar_advantage.py             # PDAR advantage estimator
+├── pdar_advantage.py             # Legacy PDAR advantage estimator
 ├── pdpo_advantage.py             # PDPO advantage estimator
-├── pdar_init.py                  # Registers pdar and pdpo
+├── pdar_init.py                  # Registers local advantage estimators
 ├── run_grpo_math.sh              # Math/general training launcher
 ├── run_grpo.sh                   # Coding training launcher
 ├── run_multiple_exp.sh           # Multi-experiment launcher
@@ -318,7 +319,7 @@ pd_reward/
 │   └── prepare_eurus_data.py      # Eurus-2-RL coding train/eval preparation
 ├── reward_score/
 │   ├── coding_executable_reward.py # Shared coding executable reward path
-│   ├── primal_dual_core.py       # Reward-level PD logic
+│   ├── primal_dual_core.py       # Legacy reward-level PD/static mix logic
 │   ├── pdar_core.py              # Shared group norm and sharpness damping helpers
 │   └── sub_reward/               # Math/coding subreward modules
 └── test/

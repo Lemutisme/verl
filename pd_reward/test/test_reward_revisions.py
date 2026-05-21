@@ -197,30 +197,33 @@ def test_math_executable_preset_uses_revised_live_rewards_by_default():
         "${MATH_WEIGHT_EXECUTABLE_UNIT_PASS_RATE_REWARD:-0.0}"
     ) in script
     assert "MATH_WEIGHT_STEP_ARITHMETIC_VALIDITY_REWARD=${MATH_WEIGHT_STEP_ARITHMETIC_VALIDITY_REWARD:-0.35}" in script
-    assert "MATH_WEIGHT_PREFIX_CONSISTENCY_REWARD=${MATH_WEIGHT_PREFIX_CONSISTENCY_REWARD:-0.25}" in script
-    assert "MATH_WEIGHT_TRACE_EFFICIENCY_REWARD=${MATH_WEIGHT_TRACE_EFFICIENCY_REWARD:-0.25}" in script
+    assert "MATH_WEIGHT_PREFIX_CONSISTENCY_REWARD=${MATH_WEIGHT_PREFIX_CONSISTENCY_REWARD:-0.15}" in script
+    assert "MATH_WEIGHT_TRACE_EFFICIENCY_REWARD=${MATH_WEIGHT_TRACE_EFFICIENCY_REWARD:-0.35}" in script
     assert "MATH_WEIGHT_ANSWER_EXTRACTABILITY_REWARD=${MATH_WEIGHT_ANSWER_EXTRACTABILITY_REWARD:-0.15}" in script
-    assert "PDAR_TAU_C_DEFAULT=0.30" in script
+    assert "PDPO_BETA_SAME=${PDPO_BETA_SAME:-0.70}" in script
+    assert "PDPO_LAMBDA_AUX=${PDPO_LAMBDA_AUX:-0.70}" in script
+    assert "PDPO_ANSWER_GATE_MIN=${PDPO_ANSWER_GATE_MIN:-0.5}" in script
+    assert "pdpo_answer_gate_closed_scale" in script
+    assert "PDPO_CORRECTNESS_SAFE=${PDPO_CORRECTNESS_SAFE:-true}" in script
+    assert "PDPO_RELIABILITY_ENABLED=${PDPO_RELIABILITY_ENABLED:-true}" in script
+    assert "pdpo_reliability_wrong_high_threshold" in script
 
 
-def test_math_pdar_ori_mode_uses_ori_reward_with_pdar_advantage():
+def test_math_reward_presets_only_include_active_matrix():
     script = (PROJECT_DIR / "run_grpo_math.sh").read_text()
-    mode_start = script.index("  pdar-ori|pdar_ori|ori-pdar|ori_pdar|pdar_original)")
-    mode_end = script.index("  pdar|pdar_reward)", mode_start)
-    mode_block = script[mode_start:mode_end]
 
-    assert "pdar-ori" in script
-    assert 'REWARD_LABEL="pdar-ori"' in mode_block
-    assert 'COMBINE_MODE="none"' in mode_block
-    assert 'ADV_ESTIMATOR="pdar"' in mode_block
-    assert "MATH_ENABLE_SUB_REWARDS=${MATH_ENABLE_SUB_REWARDS:-false}" in mode_block
+    assert "-reward {ori|new|pdpo}" in script
+    assert 'REWARD_KIND=${REWARD_KIND:-"pdpo"}' in script
+    assert "pdar-ori|" not in script
+    assert "  pd|primal_dual|pd_reward)" not in script
+    assert "  pdar|pdar_reward)" not in script
 
 
-def test_coding_pdar_script_defaults_to_general_aux_rewards():
+def test_coding_pdpo_script_defaults_to_general_aux_rewards():
     script = (PROJECT_DIR / "run_grpo.sh").read_text()
-    pdar_start = script.index("  pdar|pdar_reward)")
-    pdar_end = script.index("  *)", pdar_start)
-    pdar_block = script[pdar_start:pdar_end]
+    pdpo_start = script.index("  pdpo|pdpo_reward)")
+    pdpo_end = script.index("  *)", pdpo_start)
+    pdpo_block = script[pdpo_start:pdpo_end]
 
     assert "DEEPCODER_ENABLE_THOUGHT" not in script
     assert "DEEPCODER_BETA" not in script
@@ -230,7 +233,9 @@ def test_coding_pdar_script_defaults_to_general_aux_rewards():
     assert "CODING_WEIGHT_CODE_EXTRACTABILITY_REWARD=${CODING_WEIGHT_CODE_EXTRACTABILITY_REWARD:-0.15}" in script
     assert "CODING_ENABLE_SYNTAX_VALIDITY_REWARD=${CODING_ENABLE_SYNTAX_VALIDITY_REWARD:-true}" in script
     assert "CODING_WEIGHT_SYNTAX_VALIDITY_REWARD=${CODING_WEIGHT_SYNTAX_VALIDITY_REWARD:-0.25}" in script
-    assert "CODING_ENABLE_SUB_REWARDS=${CODING_ENABLE_SUB_REWARDS:-true}" in pdar_block
+    assert "CODING_ENABLE_SUB_REWARDS=${CODING_ENABLE_SUB_REWARDS:-true}" in pdpo_block
+    assert 'ADV_ESTIMATOR="pdpo"' in pdpo_block
+    assert 'COMBINE_MODE="pdpo"' in pdpo_block
     assert "CODING_ENABLE_STATIC_ANALYSIS_REWARD=${CODING_ENABLE_STATIC_ANALYSIS_REWARD:-false}" in script
     assert "CODING_WEIGHT_STATIC_ANALYSIS_REWARD=${CODING_WEIGHT_STATIC_ANALYSIS_REWARD:-0.0}" in script
     assert "CODING_ENABLE_EXECUTED_TOKEN_CREDIT=${CODING_ENABLE_EXECUTED_TOKEN_CREDIT:-false}" in script
@@ -268,7 +273,7 @@ def test_eurus_coding_sources_route_to_executable_reward(monkeypatch):
         "code_contests",
         "print(input())",
         '{"inputs": ["1\\n"], "outputs": ["1\\n"]}',
-        combine_mode="pdar",
+        combine_mode="pdpo",
         coding_enable_sub_rewards=True,
     )
 
@@ -276,17 +281,14 @@ def test_eurus_coding_sources_route_to_executable_reward(monkeypatch):
     assert info["acc"] is True
 
 
-def test_deepcoder_pdar_ori_mode_uses_ori_reward_with_pdar_advantage():
+def test_coding_reward_presets_only_include_active_matrix():
     script = (PROJECT_DIR / "run_grpo.sh").read_text()
-    mode_start = script.index("  pdar-ori|pdar_ori|ori-pdar|ori_pdar|pdar_original)")
-    mode_end = script.index("  pdar|pdar_reward)", mode_start)
-    mode_block = script[mode_start:mode_end]
 
-    assert "pdar-ori" in script
-    assert 'REWARD_LABEL="pdar-ori"' in mode_block
-    assert 'COMBINE_MODE="none"' in mode_block
-    assert 'ADV_ESTIMATOR="pdar"' in mode_block
-    assert "CODING_ENABLE_SUB_REWARDS=${CODING_ENABLE_SUB_REWARDS:-false}" in mode_block
+    assert "-reward {ori|new|pdpo}" in script
+    assert 'REWARD_KIND=${REWARD_KIND:-"pdpo"}' in script
+    assert "pdar-ori|" not in script
+    assert "  pd|primal_dual|pd_reward)" not in script
+    assert "  pdar|pdar_reward)" not in script
 
 
 def test_math_script_prefers_formatted_deepscalar_train_data():
@@ -333,16 +335,16 @@ def test_math_prompt_formatter_can_normalize_boxed_general365_instruction_to_has
     assert "\\boxed" not in content
 
 
-def test_run_multiple_exp_accepts_pdar_ori_filter_without_expanding_default_matrix():
+def test_run_multiple_exp_uses_active_reward_matrix_only():
     script = (PROJECT_DIR / "run_multiple_exp.sh").read_text()
 
-    assert "[-reward {pdar|pd|new|ori|pdar-ori|pdpo}]" in script
-    assert 'REWARDS=("pdar" "pd" "new" "ori")' in script
-    assert 'pdar-ori|pdar_ori|ori-pdar|ori_pdar|pdar_original)' in script
-    assert 'REWARDS=("pdar-ori")' in script
+    assert "[-reward {pdpo|new|ori}]" in script
+    assert 'REWARDS=("pdpo" "new" "ori")' in script
+    assert "pdar-ori" not in script
+    assert "pdar|pd|" not in script
 
 
-def test_pdpo_modes_are_available_but_not_added_to_default_matrix():
+def test_pdpo_modes_are_available_and_in_default_matrix():
     math_script = (PROJECT_DIR / "run_grpo_math.sh").read_text()
     code_script = (PROJECT_DIR / "run_grpo.sh").read_text()
     multi_script = (PROJECT_DIR / "run_multiple_exp.sh").read_text()
@@ -350,15 +352,15 @@ def test_pdpo_modes_are_available_but_not_added_to_default_matrix():
     assert "pdpo" in math_script
     assert 'REWARD_LABEL="pdpo"' in math_script
     assert 'ADV_ESTIMATOR="pdpo"' in math_script
-    assert 'COMBINE_MODE="pdar"' in math_script
+    assert 'COMBINE_MODE="pdpo"' in math_script
 
     assert "pdpo" in code_script
     assert 'REWARD_LABEL="pdpo"' in code_script
     assert 'ADV_ESTIMATOR="pdpo"' in code_script
-    assert 'COMBINE_MODE="pdar"' in code_script
+    assert 'COMBINE_MODE="pdpo"' in code_script
 
-    assert "[-reward {pdar|pd|new|ori|pdar-ori|pdpo}]" in multi_script
-    assert 'REWARDS=("pdar" "pd" "new" "ori")' in multi_script
+    assert "[-reward {pdpo|new|ori}]" in multi_script
+    assert 'REWARDS=("pdpo" "new" "ori")' in multi_script
     assert 'pdpo|pdpo_reward)' in multi_script
     assert 'REWARDS=("pdpo")' in multi_script
 

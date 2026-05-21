@@ -16,6 +16,7 @@ from reward_score.sub_reward.math.executable_verifier import (
 from reward_score.sub_reward.math import (
     executable_unit_pass_rate_reward,
     step_arithmetic_validity_reward,
+    trace_efficiency_reward,
 )
 
 
@@ -101,6 +102,27 @@ def test_wrong_answer_caps_executable_subreward():
     )
 
     assert step_arithmetic_validity_reward.compute(wrong_ctx, math_executable_wrong_cap=0.35) == 0.35
+
+
+def test_trace_efficiency_penalizes_long_outputs_before_wrong_cap():
+    short_wrong = _ctx(
+        "48 / 2 = 24\n48 + 24 = 72\n#### 73",
+        answer="",
+        ground_truth="72",
+        base_acc=False,
+    )
+    long_wrong = _ctx(
+        "\n".join(["48 / 2 = 24"] * 600) + "\n#### 73",
+        answer="",
+        ground_truth="72",
+        base_acc=False,
+    )
+
+    short_score = trace_efficiency_reward.compute(short_wrong, math_executable_wrong_cap=0.35)
+    long_score = trace_efficiency_reward.compute(long_wrong, math_executable_wrong_cap=0.35)
+
+    assert short_score == pytest.approx(0.35)
+    assert long_score < 0.30
 
 
 def test_custom_reward_pdar_smoke_returns_flattened_executable_metrics():

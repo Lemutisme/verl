@@ -4,10 +4,10 @@ set -euo pipefail
 usage() {
   cat <<'EOF'
 Usage:
-  bash run_grpo_math.sh -reward {ori|pdar-ori|new|pd|pdar|pdpo} -dataset {gsm8k|deepscalar|general365|openr1|master} -model {qwen3-4b|qwen3-8b|deepseek7b|custom} [options]
+  bash run_grpo_math.sh -reward {ori|new|pdpo} -dataset {gsm8k|deepscalar|general365|openr1|master} -model {qwen3-4b|qwen3-8b|deepseek7b|custom} [options]
 
 Options:
-  -reward, --reward         Reward preset: ori, pdar-ori, new, pd, pdar, pdpo (default: pd)
+  -reward, --reward         Reward preset: ori, new, pdpo (default: pdpo)
   -dataset, --dataset       Dataset preset: gsm8k, deepscalar, general365, openr1, master (default: gsm8k)
   -model, --model           Model preset: qwen3-4b, qwen3-8b, deepseek-r1-1.5b, deepseek7b, custom
   -mode, --mode             Alias of -model
@@ -44,7 +44,7 @@ sanitize_token() {
 }
 
 DATASET=${DATASET:-"gsm8k"}
-REWARD_KIND=${REWARD_KIND:-"pd"}
+REWARD_KIND=${REWARD_KIND:-"pdpo"}
 MODEL_PRESET=${MODEL_PRESET:-${MODEL_MODE:-"qwen3-4b"}}
 KL_MODE=${KL_MODE:-"loss"}
 RUN_NAME=${RUN_NAME:-""}
@@ -171,31 +171,14 @@ case "${REWARD_KIND}" in
     COMBINE_MODE="none"
     MATH_ENABLE_SUB_REWARDS=${MATH_ENABLE_SUB_REWARDS:-false}
     ;;
-  pdar-ori|pdar_ori|ori-pdar|ori_pdar|pdar_original)
-    REWARD_LABEL="pdar-ori"
-    COMBINE_MODE="none"
-    ADV_ESTIMATOR="pdar"
-    MATH_ENABLE_SUB_REWARDS=${MATH_ENABLE_SUB_REWARDS:-false}
-    ;;
   new|new_reward)
     REWARD_LABEL="new"
     COMBINE_MODE="multiplier"
     MATH_ENABLE_SUB_REWARDS=${MATH_ENABLE_SUB_REWARDS:-true}
     ;;
-  pd|primal_dual|pd_reward)
-    REWARD_LABEL="pd"
-    COMBINE_MODE="pd"
-    MATH_ENABLE_SUB_REWARDS=${MATH_ENABLE_SUB_REWARDS:-true}
-    ;;
-  pdar|pdar_reward)
-    REWARD_LABEL="pdar"
-    COMBINE_MODE="pdar"
-    ADV_ESTIMATOR="pdar"
-    MATH_ENABLE_SUB_REWARDS=${MATH_ENABLE_SUB_REWARDS:-true}
-    ;;
   pdpo|pdpo_reward)
     REWARD_LABEL="pdpo"
-    COMBINE_MODE="pdar"
+    COMBINE_MODE="pdpo"
     ADV_ESTIMATOR="pdpo"
     MATH_ENABLE_SUB_REWARDS=${MATH_ENABLE_SUB_REWARDS:-true}
     ;;
@@ -219,8 +202,6 @@ case "${MATH_SUBREWARD_PRESET}" in
     MATH_ENABLE_PREFIX_CONSISTENCY_REWARD=${MATH_ENABLE_PREFIX_CONSISTENCY_REWARD:-true}
     MATH_ENABLE_TRACE_EFFICIENCY_REWARD=${MATH_ENABLE_TRACE_EFFICIENCY_REWARD:-true}
     MATH_ENABLE_ANSWER_EXTRACTABILITY_REWARD=${MATH_ENABLE_ANSWER_EXTRACTABILITY_REWARD:-true}
-    PDAR_LAMBDA_C_MAX_DEFAULT=0.5
-    PDAR_TAU_C_DEFAULT=0.30
     ;;
   legacy)
     MATH_ENABLE_FINAL_ANSWER_REWARD=${MATH_ENABLE_FINAL_ANSWER_REWARD:-true}
@@ -234,8 +215,6 @@ case "${MATH_SUBREWARD_PRESET}" in
     MATH_WEIGHT_FINAL_ANSWER_REWARD=${MATH_WEIGHT_FINAL_ANSWER_REWARD:-0.20}
     MATH_WEIGHT_ANSWER_EFFICIENCY_REWARD=${MATH_WEIGHT_ANSWER_EFFICIENCY_REWARD:-0.15}
     MATH_WEIGHT_CONSISTENCY_REWARD=${MATH_WEIGHT_CONSISTENCY_REWARD:-0.10}
-    PDAR_LAMBDA_C_MAX_DEFAULT=1.0
-    PDAR_TAU_C_DEFAULT=0.5
     ;;
   *)
     echo "Unsupported math subreward preset: ${MATH_SUBREWARD_PRESET}" >&2
@@ -247,8 +226,8 @@ MATH_WEIGHT_ANSWER_EFFICIENCY_REWARD=${MATH_WEIGHT_ANSWER_EFFICIENCY_REWARD:-0.0
 MATH_WEIGHT_CONSISTENCY_REWARD=${MATH_WEIGHT_CONSISTENCY_REWARD:-0.0}
 MATH_WEIGHT_EXECUTABLE_UNIT_PASS_RATE_REWARD=${MATH_WEIGHT_EXECUTABLE_UNIT_PASS_RATE_REWARD:-0.0}
 MATH_WEIGHT_STEP_ARITHMETIC_VALIDITY_REWARD=${MATH_WEIGHT_STEP_ARITHMETIC_VALIDITY_REWARD:-0.35}
-MATH_WEIGHT_PREFIX_CONSISTENCY_REWARD=${MATH_WEIGHT_PREFIX_CONSISTENCY_REWARD:-0.25}
-MATH_WEIGHT_TRACE_EFFICIENCY_REWARD=${MATH_WEIGHT_TRACE_EFFICIENCY_REWARD:-0.25}
+MATH_WEIGHT_PREFIX_CONSISTENCY_REWARD=${MATH_WEIGHT_PREFIX_CONSISTENCY_REWARD:-0.15}
+MATH_WEIGHT_TRACE_EFFICIENCY_REWARD=${MATH_WEIGHT_TRACE_EFFICIENCY_REWARD:-0.35}
 MATH_WEIGHT_ANSWER_EXTRACTABILITY_REWARD=${MATH_WEIGHT_ANSWER_EXTRACTABILITY_REWARD:-0.15}
 MATH_EXECUTABLE_WRONG_CAP=${MATH_EXECUTABLE_WRONG_CAP:-0.35}
 MATH_EXECUTABLE_NUMERIC_TOL=${MATH_EXECUTABLE_NUMERIC_TOL:-1e-6}
@@ -447,20 +426,28 @@ EXP_NAME=${EXP_NAME:-"${DEFAULT_EXP_NAME}"}
 
 ADV_ESTIMATOR=${ADV_ESTIMATOR:-"grpo"}
 
-# PDAR/PDPO hyperparameters
-PDAR_ETA_C=${PDAR_ETA_C:-0.05}
-PDAR_ETA_S=${PDAR_ETA_S:-0.01}
-PDAR_LAMBDA_C_MAX=${PDAR_LAMBDA_C_MAX:-${PDAR_LAMBDA_C_MAX_DEFAULT:-1.0}}
-PDAR_LAMBDA_S_MAX=${PDAR_LAMBDA_S_MAX:-2.0}
-PDAR_TAU_C=${PDAR_TAU_C:-${PDAR_TAU_C_DEFAULT:-0.5}}
-PDAR_TAU_S=${PDAR_TAU_S:-1.5}
-PDAR_SIGN_C=${PDAR_SIGN_C:-1.0}
-PDAR_SHARPNESS_EMA_ALPHA=${PDAR_SHARPNESS_EMA_ALPHA:-0.1}
+# PDPO hyperparameters
 PDPO_BETA_TIE=${PDPO_BETA_TIE:-0.20}
-PDPO_BETA_SAME=${PDPO_BETA_SAME:-1.00}
-PDPO_LAMBDA_AUX=${PDPO_LAMBDA_AUX:-1.00}
+PDPO_BETA_SAME=${PDPO_BETA_SAME:-0.70}
+PDPO_LAMBDA_AUX=${PDPO_LAMBDA_AUX:-0.70}
 PDPO_MIN_AUX_STD=${PDPO_MIN_AUX_STD:-1e-6}
 PDPO_MIN_MAIN_STD=${PDPO_MIN_MAIN_STD:-1e-6}
+PDPO_ANSWER_GATE_MIN=${PDPO_ANSWER_GATE_MIN:-0.5}
+PDPO_ANSWER_GATE_CLOSED_SCALE=${PDPO_ANSWER_GATE_CLOSED_SCALE:-0.0}
+PDPO_CORRECTNESS_SAFE=${PDPO_CORRECTNESS_SAFE:-true}
+PDPO_CORRECTNESS_MARGIN=${PDPO_CORRECTNESS_MARGIN:-1e-3}
+PDPO_RELIABILITY_ENABLED=${PDPO_RELIABILITY_ENABLED:-true}
+PDPO_RELIABILITY_EMA_ALPHA=${PDPO_RELIABILITY_EMA_ALPHA:-0.05}
+PDPO_RELIABILITY_MIN_SCALE=${PDPO_RELIABILITY_MIN_SCALE:-0.0}
+PDPO_RELIABILITY_MAX_SCALE=${PDPO_RELIABILITY_MAX_SCALE:-1.0}
+PDPO_RELIABILITY_TARGET_MARGIN=${PDPO_RELIABILITY_TARGET_MARGIN:-0.02}
+PDPO_RELIABILITY_NEGATIVE_TOLERANCE=${PDPO_RELIABILITY_NEGATIVE_TOLERANCE:-0.02}
+PDPO_RELIABILITY_WRONG_HIGH_THRESHOLD=${PDPO_RELIABILITY_WRONG_HIGH_THRESHOLD:-0.30}
+PDPO_RELIABILITY_WRONG_HIGH_TARGET=${PDPO_RELIABILITY_WRONG_HIGH_TARGET:-0.20}
+PDPO_ETA_S=${PDPO_ETA_S:-0.01}
+PDPO_LAMBDA_S_MAX=${PDPO_LAMBDA_S_MAX:-2.0}
+PDPO_TAU_S=${PDPO_TAU_S:-1.5}
+PDPO_SHARPNESS_EMA_ALPHA=${PDPO_SHARPNESS_EMA_ALPHA:-0.1}
 
 SAVE_EVERY_STEPS=${CLI_SAVE_FREQ:-${SAVE_EVERY_STEPS:--1}}
 EVAL_EVERY_STEPS=${EVAL_EVERY_STEPS:-5}
@@ -721,19 +708,27 @@ CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES} python3 -m verl.trainer.main_ppo \
   ++reward_model.reward_kwargs.math_efficiency_min_tokens="${MATH_EFFICIENCY_MIN_TOKENS}" \
   ++reward_model.reward_kwargs.math_efficiency_max_tokens="${MATH_EFFICIENCY_MAX_TOKENS}" \
   ++reward_model.reward_kwargs.math_efficiency_post_answer_max_tokens="${MATH_EFFICIENCY_POST_ANSWER_MAX_TOKENS}" \
-  ++reward_model.reward_kwargs.pdar_eta_c="${PDAR_ETA_C}" \
-  ++reward_model.reward_kwargs.pdar_eta_s="${PDAR_ETA_S}" \
-  ++reward_model.reward_kwargs.pdar_lambda_c_max="${PDAR_LAMBDA_C_MAX}" \
-  ++reward_model.reward_kwargs.pdar_lambda_s_max="${PDAR_LAMBDA_S_MAX}" \
-  ++reward_model.reward_kwargs.pdar_tau_c="${PDAR_TAU_C}" \
-  ++reward_model.reward_kwargs.pdar_tau_s="${PDAR_TAU_S}" \
-  ++reward_model.reward_kwargs.pdar_sign_c="${PDAR_SIGN_C}" \
-  ++reward_model.reward_kwargs.pdar_sharpness_ema_alpha="${PDAR_SHARPNESS_EMA_ALPHA}" \
   ++reward_model.reward_kwargs.pdpo_beta_tie="${PDPO_BETA_TIE}" \
   ++reward_model.reward_kwargs.pdpo_beta_same="${PDPO_BETA_SAME}" \
   ++reward_model.reward_kwargs.pdpo_lambda_aux="${PDPO_LAMBDA_AUX}" \
   ++reward_model.reward_kwargs.pdpo_min_aux_std="${PDPO_MIN_AUX_STD}" \
   ++reward_model.reward_kwargs.pdpo_min_main_std="${PDPO_MIN_MAIN_STD}" \
+  ++reward_model.reward_kwargs.pdpo_answer_gate_min="${PDPO_ANSWER_GATE_MIN}" \
+  ++reward_model.reward_kwargs.pdpo_answer_gate_closed_scale="${PDPO_ANSWER_GATE_CLOSED_SCALE}" \
+  ++reward_model.reward_kwargs.pdpo_correctness_safe="${PDPO_CORRECTNESS_SAFE}" \
+  ++reward_model.reward_kwargs.pdpo_correctness_margin="${PDPO_CORRECTNESS_MARGIN}" \
+  ++reward_model.reward_kwargs.pdpo_reliability_enabled="${PDPO_RELIABILITY_ENABLED}" \
+  ++reward_model.reward_kwargs.pdpo_reliability_ema_alpha="${PDPO_RELIABILITY_EMA_ALPHA}" \
+  ++reward_model.reward_kwargs.pdpo_reliability_min_scale="${PDPO_RELIABILITY_MIN_SCALE}" \
+  ++reward_model.reward_kwargs.pdpo_reliability_max_scale="${PDPO_RELIABILITY_MAX_SCALE}" \
+  ++reward_model.reward_kwargs.pdpo_reliability_target_margin="${PDPO_RELIABILITY_TARGET_MARGIN}" \
+  ++reward_model.reward_kwargs.pdpo_reliability_negative_tolerance="${PDPO_RELIABILITY_NEGATIVE_TOLERANCE}" \
+  ++reward_model.reward_kwargs.pdpo_reliability_wrong_high_threshold="${PDPO_RELIABILITY_WRONG_HIGH_THRESHOLD}" \
+  ++reward_model.reward_kwargs.pdpo_reliability_wrong_high_target="${PDPO_RELIABILITY_WRONG_HIGH_TARGET}" \
+  ++reward_model.reward_kwargs.pdpo_eta_s="${PDPO_ETA_S}" \
+  ++reward_model.reward_kwargs.pdpo_lambda_s_max="${PDPO_LAMBDA_S_MAX}" \
+  ++reward_model.reward_kwargs.pdpo_tau_s="${PDPO_TAU_S}" \
+  ++reward_model.reward_kwargs.pdpo_sharpness_ema_alpha="${PDPO_SHARPNESS_EMA_ALPHA}" \
   algorithm.use_kl_in_reward="${USE_KL_IN_REWARD}" \
   algorithm.kl_penalty="${KL_PENALTY}" \
   algorithm.kl_ctrl.type="${KL_CTRL_TYPE}" \
