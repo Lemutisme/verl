@@ -508,8 +508,26 @@ HF_HOME=${HF_HOME:-"${RAY_DATA_HOME}/hf_cache"}
 export HF_HOME
 export HF_HUB_CACHE="${HF_HOME}"
 
-TRAIN_FILE="${RAY_DATA_HOME}/math/deepcoder_full_train.parquet"
-VAL_FILE="${RAY_DATA_HOME}/coding/code_eval_master.parquet"
+DEEPCODER_DEFAULT_TRAIN_FILE="${RAY_DATA_HOME}/math/deepcoder_full_train.parquet"
+DEEPCODER_DEFAULT_VAL_FILE="${RAY_DATA_HOME}/coding/code_eval_master.parquet"
+DEEPCODER_CLEAN_TRAIN_FILE="${RAY_DATA_HOME}/math/deepcoder_full_train_clean.parquet"
+DEEPCODER_CLEAN_VAL_FILE="${RAY_DATA_HOME}/coding/code_eval_master_clean.parquet"
+
+if [[ -n "${DEEPCODER_TRAIN_FILE:-}" ]]; then
+  TRAIN_FILE="${DEEPCODER_TRAIN_FILE}"
+elif [[ -f "${DEEPCODER_CLEAN_TRAIN_FILE}" ]]; then
+  TRAIN_FILE="${DEEPCODER_CLEAN_TRAIN_FILE}"
+else
+  TRAIN_FILE="${DEEPCODER_DEFAULT_TRAIN_FILE}"
+fi
+
+if [[ -n "${DEEPCODER_VAL_FILE:-}" ]]; then
+  VAL_FILE="${DEEPCODER_VAL_FILE}"
+elif [[ -f "${DEEPCODER_CLEAN_VAL_FILE}" ]]; then
+  VAL_FILE="${DEEPCODER_CLEAN_VAL_FILE}"
+else
+  VAL_FILE="${DEEPCODER_DEFAULT_VAL_FILE}"
+fi
 
 TENSORBOARD_DIR="${CKPTS_DIR}/tensorboard"
 TRAIN_LOG_PATH="${CKPTS_DIR}/train.log"

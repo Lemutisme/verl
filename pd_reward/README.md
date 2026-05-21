@@ -294,9 +294,10 @@ pd_reward/
 │   ├── primal_dual_core.py       # Reward-level PD logic
 │   ├── pdar_core.py              # Shared group norm and sharpness damping helpers
 │   └── sub_reward/               # Math/coding subreward modules
-├── test_pdar_advantage.py
-├── test_pdpo_advantage.py
-└── test_reward_revisions.py
+└── test/
+    ├── test_pdar_advantage.py
+    ├── test_pdpo_advantage.py
+    └── test_reward_revisions.py
 ```
 
 ## Verification

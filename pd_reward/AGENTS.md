@@ -2,7 +2,7 @@
 
 ## Project Structure & Module Organization
 
-This directory contains PD, PDAR, and PDPO reward and advantage experiments within the larger `verl` repository. Core entry points live at the top level: `custom_reward.py`, `pdar_advantage.py`, `pdpo_advantage.py`, and `pdar_init.py`. Reward implementations and shared helpers live in `reward_score/`, with subreward utilities under `reward_score/sub_reward/`. Dataset preparation scripts are in `data_preprocess/`. Experiment launchers are shell scripts such as `run_grpo.sh`, `run_grpo_math.sh`, and `run_multiple_exp.sh`. Unit tests are colocated as `test_*.py`. Generated outputs such as `logs_*` are ignored and should not be committed.
+This directory contains PD, PDAR, and PDPO reward and advantage experiments within the larger `verl` repository. Core entry points live at the top level: `custom_reward.py`, `pdar_advantage.py`, `pdpo_advantage.py`, and `pdar_init.py`. Reward implementations and shared helpers live in `reward_score/`, with subreward utilities under `reward_score/sub_reward/`. Dataset preparation scripts are in `data_preprocess/`. Experiment launchers are shell scripts such as `run_grpo.sh`, `run_grpo_math.sh`, and `run_multiple_exp.sh`. Unit tests live in `test/` as `test_*.py`. Generated outputs such as `logs_*` are ignored and should not be committed.
 
 ## Build, Test, and Development Commands
 
@@ -10,7 +10,7 @@ Use the root repository Python environment setup from `../AGENTS.md`. Common loc
 
 ```bash
 pytest -q
-pytest -q test_pdpo_advantage.py
+pytest -q test/test_pdpo_advantage.py
 python -m compileall -q .
 bash run_grpo_math.sh -reward pdpo -dataset gsm8k -gpus 5
 bash run_multiple_exp.sh -gpus 5 -reward pdpo
@@ -24,7 +24,7 @@ Follow the root `pyproject.toml`: Python uses Ruff formatting and linting with a
 
 ## Testing Guidelines
 
-Add or update colocated `test_*.py` files for estimator, reward, and script-behavior changes. Prefer small deterministic tests over GPU-dependent integration tests. Reset global PDAR/PDPO state in fixtures when tests mutate estimator state. For reward-channel changes, cover flat main-reward groups, tied groups, zero-variance auxiliary channels, and anti-correlated auxiliary signals.
+Add or update `test/test_*.py` files for estimator, reward, and script-behavior changes. Prefer small deterministic tests over GPU-dependent integration tests. Reset global PDAR/PDPO state in fixtures when tests mutate estimator state. For reward-channel changes, cover flat main-reward groups, tied groups, zero-variance auxiliary channels, and anti-correlated auxiliary signals.
 
 ## Commit & Pull Request Guidelines
 

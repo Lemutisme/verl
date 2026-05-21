@@ -5,7 +5,7 @@
 
 # Default values
 GPUS=""
-STEPS="400"
+STEPS="500"
 REWARD_FILTER=""
 CLEANUP_RAY_VLLM=false
 SAVE_MODEL=false
@@ -124,7 +124,7 @@ else
 fi
 
 # Datasets for run_grpo_math.sh
-MATH_DATASETS=("gsm8k" "deepscalar" "general365")
+MATH_DATASETS=("deepscalar" "general365" "gsm8k" )
 
 # Paths to scripts
 MATH_SCRIPT="${DIR}/run_grpo_math.sh"

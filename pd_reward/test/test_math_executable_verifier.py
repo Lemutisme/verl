@@ -134,3 +134,28 @@ def test_custom_reward_pdar_smoke_returns_flattened_executable_metrics():
     assert "math_executable_unit_pass_rate_reward" in result
     assert "math_step_arithmetic_validity_reward" in result
     assert result["aux_rewards"]["math_executable_unit_pass_rate_reward"] == 1.0
+
+
+def test_custom_math_reward_accepts_hash_and_boxed_final_answers():
+    hash_result = compute_score("deepscalar:train", "work\n#### 116", "116")
+    boxed_result = compute_score("general365", "### The final answer is: $\\boxed{1500}$", "1500")
+
+    assert hash_result["score"] == 1.0
+    assert hash_result["acc"] is True
+    assert boxed_result["score"] == 1.0
+    assert boxed_result["acc"] is True
+
+
+def test_custom_math_reward_treats_integer_and_decimal_ground_truth_as_equal():
+    result = compute_score("amc", "#### Answer: $\\boxed{142}$", "142.0")
+
+    assert result["score"] == 1.0
+    assert result["acc"] is True
+    assert result["pred"] == "142"
+
+
+def test_custom_math_reward_accepts_nested_boxed_fraction_answer():
+    result = compute_score("math500", "Final Answer: $\\boxed{\\frac{1}{2}}$", "0.5")
+
+    assert result["score"] == 1.0
+    assert result["acc"] is True

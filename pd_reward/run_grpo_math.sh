@@ -557,11 +557,27 @@ case "${DATASET}" in
     VAL_FILE="${RAY_DATA_HOME}/gsm8k/test.parquet"
     ;;
   deepscalar)
-    TRAIN_FILE="${RAY_DATA_HOME}/math/deepscalar_train.parquet"
+    DEEPSCALAR_DEFAULT_TRAIN_FILE="${RAY_DATA_HOME}/math/deepscalar_train.parquet"
+    DEEPSCALAR_FORMATTED_TRAIN_FILE="${RAY_DATA_HOME}/math/deepscalar_train_formatted.parquet"
+    if [[ -n "${DEEPSCALAR_TRAIN_FILE:-}" ]]; then
+      TRAIN_FILE="${DEEPSCALAR_TRAIN_FILE}"
+    elif [[ -f "${DEEPSCALAR_FORMATTED_TRAIN_FILE}" ]]; then
+      TRAIN_FILE="${DEEPSCALAR_FORMATTED_TRAIN_FILE}"
+    else
+      TRAIN_FILE="${DEEPSCALAR_DEFAULT_TRAIN_FILE}"
+    fi
     VAL_FILE="${RAY_DATA_HOME}/math/math_eval_master.parquet"
     ;;
   general365)
-    TRAIN_FILE="${RAY_DATA_HOME}/general365/train.parquet"
+    GENERAL365_DEFAULT_TRAIN_FILE="${RAY_DATA_HOME}/general365/train.parquet"
+    GENERAL365_FORMATTED_TRAIN_FILE="${RAY_DATA_HOME}/general365/train_formatted.parquet"
+    if [[ -n "${GENERAL365_TRAIN_FILE:-}" ]]; then
+      TRAIN_FILE="${GENERAL365_TRAIN_FILE}"
+    elif [[ -f "${GENERAL365_FORMATTED_TRAIN_FILE}" ]]; then
+      TRAIN_FILE="${GENERAL365_FORMATTED_TRAIN_FILE}"
+    else
+      TRAIN_FILE="${GENERAL365_DEFAULT_TRAIN_FILE}"
+    fi
     VAL_FILE="${RAY_DATA_HOME}/math/math_eval_master.parquet"
     ;;
   openr1)

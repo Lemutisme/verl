@@ -2,11 +2,11 @@ from pathlib import Path
 import re
 
 
-SCRIPT_DIR = Path(__file__).resolve().parent
+PROJECT_DIR = Path(__file__).resolve().parents[1]
 
 
 def _ray_tmpdir_default(script_name: str) -> str:
-    script_text = (SCRIPT_DIR / script_name).read_text()
+    script_text = (PROJECT_DIR / script_name).read_text()
     match = re.search(
         r'^RAY_TMP_ROOT=.*\n'
         r'RAY_TMP_TAG=.*\n'

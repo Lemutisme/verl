@@ -1,5 +1,8 @@
 import os
+import re
 import sys
+from decimal import Decimal, InvalidOperation
+from fractions import Fraction
 from typing import Any
 
 # Add current directory to sys.path to allow importing local reward_score package
@@ -45,6 +48,10 @@ MATH_DATA_SOURCES = {
 
 
 _COMBINER_CACHE = {}
+
+
+_LABELED_ANSWER_RE = re.compile(r"(?i)(?:final\s+answer|answer)\s*[:：]\s*([^\n]+)")
+_LATEX_FRAC_RE = re.compile(r"\\frac\{([^{}]+)\}\{([^{}]+)\}")
 
 
 def _to_float(v: Any, default: float = 0.0) -> float:
@@ -99,6 +106,141 @@ def _weighted_subreward_average(subrewards: dict[str, float], kwargs: dict[str, 
     if weight_sum <= 0:
         return sum(float(v) for v in subrewards.values()) / max(len(subrewards), 1)
     return weighted_sum / weight_sum
+
+
+def _extract_boxed_answers(text: str) -> list[str]:
+    answers = []
+    for match in re.finditer(r"\\boxed\s*\{", str(text or "")):
+        start = match.end()
+        depth = 1
+        idx = start
+        while idx < len(text) and depth > 0:
+            char = text[idx]
+            if char == "{":
+                depth += 1
+            elif char == "}":
+                depth -= 1
+            idx += 1
+        if depth == 0:
+            answers.append(text[start : idx - 1].strip())
+    return answers
+
+
+def _clean_candidate_answer(value: Any) -> str:
+    text = str(value or "").strip()
+    text = re.sub(r"^\s+", "", text)
+    text = re.sub(r"(?i)^(?:the\s+)?(?:final\s+answer|answer)\s*[:：]\s*", "", text).strip()
+    text = text.strip().strip("$").strip()
+    boxed_answers = _extract_boxed_answers(text)
+    if len(boxed_answers) == 1:
+        text = boxed_answers[0]
+    return text.strip().strip("$").strip().strip(".。")
+
+
+def _normalize_math_answer(value: Any) -> str:
+    return math_dapo.normalize_final_answer(_clean_candidate_answer(value))
+
+
+def _fraction_from_answer(value: Any) -> Fraction | None:
+    text = _normalize_math_answer(value).replace(" ", "")
+    if not text:
+        return None
+
+    sign = 1
+    if text.startswith("-"):
+        sign = -1
+        text = text[1:]
+    elif text.startswith("+"):
+        text = text[1:]
+
+    frac_match = _LATEX_FRAC_RE.fullmatch(text)
+    if frac_match:
+        try:
+            numerator = Decimal(frac_match.group(1))
+            denominator = Decimal(frac_match.group(2))
+            if denominator == 0:
+                return None
+            return sign * Fraction(numerator) / Fraction(denominator)
+        except (InvalidOperation, ValueError, ZeroDivisionError):
+            return None
+
+    slash_match = re.fullmatch(r"([-+]?\d+(?:\.\d+)?)\s*/\s*([-+]?\d+(?:\.\d+)?)", text)
+    if slash_match:
+        try:
+            denominator = Decimal(slash_match.group(2))
+            if denominator == 0:
+                return None
+            return sign * Fraction(Decimal(slash_match.group(1))) / Fraction(denominator)
+        except (InvalidOperation, ValueError, ZeroDivisionError):
+            return None
+
+    if re.fullmatch(r"[-+]?\d+(?:\.\d+)?", text):
+        try:
+            return sign * Fraction(Decimal(text))
+        except (InvalidOperation, ValueError):
+            return None
+    return None
+
+
+def _math_answers_equivalent(pred: Any, ground_truth: Any) -> tuple[bool, str]:
+    pred_norm = _normalize_math_answer(pred)
+    gt_norm = _normalize_math_answer(ground_truth)
+    if pred_norm == gt_norm:
+        return True, pred_norm
+
+    pred_fraction = _fraction_from_answer(pred_norm)
+    gt_fraction = _fraction_from_answer(gt_norm)
+    if pred_fraction is not None and gt_fraction is not None and pred_fraction == gt_fraction:
+        return True, pred_norm
+
+    return False, pred_norm
+
+
+def _first_nonempty_line(text: str) -> str:
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped:
+            return stripped
+    return text.strip()
+
+
+def _math_answer_candidates(solution_str: str) -> list[str]:
+    candidates: list[str] = []
+    text = str(solution_str or "")
+
+    if "####" in text:
+        tail = text.rsplit("####", 1)[-1].strip()
+        if tail:
+            candidates.append(_first_nonempty_line(tail))
+
+    labeled_matches = list(_LABELED_ANSWER_RE.finditer(text))
+    if labeled_matches:
+        candidates.append(labeled_matches[-1].group(1))
+
+    boxed_answers = _extract_boxed_answers(text)
+    if boxed_answers:
+        candidates.append(boxed_answers[-1])
+
+    seen = set()
+    deduped = []
+    for candidate in candidates:
+        cleaned = _clean_candidate_answer(candidate)
+        if cleaned and cleaned not in seen:
+            seen.add(cleaned)
+            deduped.append(cleaned)
+    return deduped
+
+
+def _score_math_dapo_flexible(solution_str: str, ground_truth: str):
+    base_res = math_dapo.compute_score(solution_str, ground_truth)
+    if isinstance(base_res, dict) and bool(base_res.get("acc", False)):
+        return base_res
+
+    for candidate in _math_answer_candidates(solution_str):
+        correct, pred = _math_answers_equivalent(candidate, ground_truth)
+        if correct:
+            return {"score": 1.0, "acc": True, "pred": pred}
+    return base_res
 
 
 def _flatten_subrewards(info: dict[str, Any], subrewards: dict[str, float]) -> dict[str, Any]:
@@ -171,11 +313,18 @@ def _score_math(data_source, solution_str, ground_truth, extra_info=None, **kwar
         base_res = gsm8k.compute_score(solution_str, ground_truth)
         
         # Fallback for models that output \boxed{} instead of ####
-        if isinstance(base_res, (int, float)) and base_res == 0.0 or (isinstance(base_res, dict) and base_res.get("score", 0.0) == 0.0):
-            if "\\boxed{" in solution_str:
-                base_res = math_dapo.compute_score(solution_str, ground_truth)
-            else:
-                base_res = gsm8k.compute_score(solution_str, ground_truth, method="flexible")
+        base_wrong = (
+            (isinstance(base_res, (int, float)) and base_res == 0.0)
+            or (isinstance(base_res, dict) and base_res.get("score", 0.0) == 0.0)
+        )
+        if base_wrong:
+            base_res = gsm8k.compute_score(solution_str, ground_truth, method="flexible")
+            flexible_wrong = (
+                (isinstance(base_res, (int, float)) and base_res == 0.0)
+                or (isinstance(base_res, dict) and not bool(base_res.get("acc", base_res.get("score", 0.0) > 0.0)))
+            )
+            if flexible_wrong:
+                base_res = _score_math_dapo_flexible(solution_str, ground_truth)
                 
         if isinstance(base_res, dict):
             base_score = float(base_res.get("score", base_res.get("acc", 0.0)))
@@ -185,7 +334,7 @@ def _score_math(data_source, solution_str, ground_truth, extra_info=None, **kwar
             base_acc = base_score > 0.0
             base_res = {"score": base_score, "acc": base_acc}
     else:
-        base_res = math_dapo.compute_score(solution_str, ground_truth)
+        base_res = _score_math_dapo_flexible(solution_str, ground_truth)
         base_score = float(base_res.get("score", 0.0)) if isinstance(base_res, dict) else float(base_res)
         base_acc = bool(base_res.get("acc", base_score > 0.0)) if isinstance(base_res, dict) else base_score > 0.0
 

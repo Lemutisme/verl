@@ -9,8 +9,12 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 # Import directly from the file
 import importlib.util
-spec = importlib.util.spec_from_file_location("primal_dual_core", 
-    os.path.join(os.path.dirname(os.path.abspath(__file__)), "reward_score", "primal_dual_core.py"))
+
+PROJECT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+spec = importlib.util.spec_from_file_location(
+    "primal_dual_core",
+    os.path.join(PROJECT_DIR, "reward_score", "primal_dual_core.py"),
+)
 mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)
 

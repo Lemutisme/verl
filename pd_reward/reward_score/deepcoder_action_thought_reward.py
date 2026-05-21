@@ -1,7 +1,10 @@
 import os
 import re
 import json
+import base64
+import pickle
 import threading
+import zlib
 from typing import Any, Dict, List, Tuple, Union
 import ast
 import math
@@ -25,30 +28,100 @@ def _extract_code(text: str) -> str:
     m_unclosed = re.search(r"```(?:python)?\s*(.*)", text, re.DOTALL | re.IGNORECASE)
     if m_unclosed:
         return m_unclosed.group(1).strip()
-    return text.strip()
+    stripped = text.strip()
+    lines = stripped.splitlines()
+    for idx, line in enumerate(lines):
+        if re.match(r"\s*(import|from|def|class|if\s+__name__\s*==|[a-zA-Z_][\w_]*\s*=)", line):
+            return "\n".join(lines[idx:]).strip()
+    return stripped
 
-def _get_tests_deepcoder(sample: Dict[str, Any]) -> Tuple[List[Any], List[Any]]:
+
+def _load_tests_payload(tests_payload: Any) -> Any:
+    if isinstance(tests_payload, (dict, list)):
+        return tests_payload
+    if not isinstance(tests_payload, str):
+        return {}
+
+    text = tests_payload.strip()
+    if not text:
+        return {}
+
+    try:
+        return json.loads(text)
+    except Exception:
+        pass
+
+    try:
+        decoded = zlib.decompress(base64.b64decode(text))
+        payload = pickle.loads(decoded)
+        if isinstance(payload, bytes):
+            payload = payload.decode()
+        if isinstance(payload, str):
+            return json.loads(payload)
+        return payload
+    except Exception:
+        return {}
+
+
+def _stringify_stdio_value(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, (list, tuple)):
+        if len(value) == 1:
+            return _stringify_stdio_value(value[0])
+        return "\n".join(_stringify_stdio_value(item).rstrip("\n") for item in value)
+    if isinstance(value, dict):
+        return json.dumps(value, ensure_ascii=False)
+    return str(value)
+
+
+def _stringify_function_input(value: Any) -> str:
+    if isinstance(value, (list, tuple)):
+        return "\n".join(json.dumps(item, ensure_ascii=False) for item in value)
+    return json.dumps(value, ensure_ascii=False)
+
+
+def _stringify_function_output(value: Any) -> str:
+    if isinstance(value, (dict, list, tuple)) or value is None or isinstance(value, bool):
+        return json.dumps(value, ensure_ascii=False)
+    return str(value)
+
+
+def _get_tests_deepcoder(sample: Dict[str, Any]) -> Dict[str, Any]:
     """
     Extract inputs and outputs pairs from DeepCoder tests JSON string.
     """
     tests_str = sample.get("tests", "{}")
     if not tests_str:
-        return [], []
-    try:
-        data = json.loads(tests_str)
-        if isinstance(data, list):
-            inputs = []
-            outputs = []
-            for item in data:
-                if isinstance(item, dict):
-                    inputs.append(item.get("input", item.get("stdin", "")))
-                    outputs.append(item.get("output", item.get("stdout", "")))
-            return inputs, outputs
-        inputs = data.get("inputs", [])
-        outputs = data.get("outputs", [])
-        return inputs, outputs
-    except Exception:
-        return [], []
+        return {"inputs": [], "outputs": [], "fn_name": None, "assert_case": []}
+
+    data = _load_tests_payload(tests_str)
+    if isinstance(data, list):
+        inputs = []
+        outputs = []
+        for item in data:
+            if isinstance(item, dict):
+                inputs.append(_stringify_stdio_value(item.get("input", item.get("stdin", ""))))
+                outputs.append(_stringify_stdio_value(item.get("output", item.get("stdout", ""))))
+        return {"inputs": inputs, "outputs": outputs, "fn_name": None, "assert_case": [""] * len(inputs)}
+
+    if not isinstance(data, dict):
+        return {"inputs": [], "outputs": [], "fn_name": None, "assert_case": []}
+
+    raw_inputs = data.get("inputs", [])
+    raw_outputs = data.get("outputs", [])
+    fn_name = data.get("fn_name") or None
+
+    if fn_name:
+        inputs = [_stringify_function_input(value) for value in raw_inputs]
+        outputs = [_stringify_function_output(value) for value in raw_outputs]
+    else:
+        inputs = [_stringify_stdio_value(value) for value in raw_inputs]
+        outputs = [_stringify_stdio_value(value) for value in raw_outputs]
+
+    assert_cases = data.get("assert_case") or [""] * len(inputs)
+    assert_cases = [_stringify_stdio_value(value) for value in assert_cases]
+    return {"inputs": inputs, "outputs": outputs, "fn_name": fn_name, "assert_case": assert_cases}
 
 def _ast_depth_stats(tree: ast.AST):
     depth_cnt = defaultdict(int)
@@ -138,11 +211,24 @@ def combine_reward(S_perf: float, S_thought: float, S_action: float, beta: float
         r = 1.0
     return float(r)
 
-def _run_deepcoder_eval(code: str, inputs: List[str], expected_outputs: List[str], timeout_s: int = 10, sandbox_url: str = "http://localhost:8000/run", concurrent_semaphore=None) -> Tuple[int, int, str]:
+def _run_deepcoder_eval(
+    code: str,
+    inputs: List[str],
+    expected_outputs: List[str],
+    timeout_s: int = 10,
+    sandbox_url: str = "http://localhost:8000/run",
+    concurrent_semaphore=None,
+    fn_name: str | None = None,
+    assert_cases: List[str] | None = None,
+) -> Tuple[int, int, str]:
     if not inputs:
         return 0, 0, "no_tests"
 
     in_outs = {"inputs": inputs, "outputs": expected_outputs}
+    if fn_name:
+        in_outs["fn_name"] = fn_name
+    if assert_cases is not None:
+        in_outs["assert_case"] = assert_cases
     # Using check_correctness from sandbox_fusion. 
     # Returns results list: True, False, -1 (err)
     results, metadata_list = check_correctness(
@@ -185,11 +271,24 @@ def compute_score_deepcoder(sample_or_solution: dict, ground_truth: Any = None, 
             sample["tests"] = ground_truth
         sample["response"] = str(sample_or_solution)
     
-    inputs, expected_outputs = _get_tests_deepcoder(sample)
+    tests = _get_tests_deepcoder(sample)
+    inputs = tests["inputs"]
+    expected_outputs = tests["outputs"]
+    fn_name = tests.get("fn_name")
+    assert_cases = tests.get("assert_case")
 
     def _score_one(resp: str) -> Dict[str, float]:
         code = _extract_code(str(resp))
-        passed, total, eval_error = _run_deepcoder_eval(code, inputs, expected_outputs, timeout_s, sandbox_url, concurrent_semaphore=concurrent_semaphore)
+        passed, total, eval_error = _run_deepcoder_eval(
+            code,
+            inputs,
+            expected_outputs,
+            timeout_s,
+            sandbox_url,
+            concurrent_semaphore=concurrent_semaphore,
+            fn_name=fn_name,
+            assert_cases=assert_cases,
+        )
         S_perf = 0.0 if total == 0 else float(passed) / float(total)
         S_thought = 0.0
         S_action = 0.0
