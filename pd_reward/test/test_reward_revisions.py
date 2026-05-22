@@ -207,6 +207,9 @@ def test_math_executable_preset_uses_revised_live_rewards_by_default():
     assert "PDPO_CORRECTNESS_SAFE=${PDPO_CORRECTNESS_SAFE:-true}" in script
     assert "PDPO_RELIABILITY_ENABLED=${PDPO_RELIABILITY_ENABLED:-true}" in script
     assert "pdpo_reliability_wrong_high_threshold" in script
+    assert "PDPO_SAFETY_DUAL_ENABLED=${PDPO_SAFETY_DUAL_ENABLED:-true}" in script
+    assert "pdpo_safety_dual_eta" in script
+    assert "pdpo_safety_dual_wrong_high_target" in script
 
 
 def test_math_reward_presets_only_include_active_matrix():
@@ -242,6 +245,9 @@ def test_coding_pdpo_script_defaults_to_general_aux_rewards():
     assert "CODING_WEIGHT_EXECUTED_TOKEN_CREDIT=${CODING_WEIGHT_EXECUTED_TOKEN_CREDIT:-0.0}" in script
     assert "CODING_ENABLE_BLOCK_LEVEL_PROCESS_REWARD=${CODING_ENABLE_BLOCK_LEVEL_PROCESS_REWARD:-false}" in script
     assert "CODING_WEIGHT_BLOCK_LEVEL_PROCESS_REWARD=${CODING_WEIGHT_BLOCK_LEVEL_PROCESS_REWARD:-0.0}" in script
+    assert "PDPO_SAFETY_DUAL_ENABLED=${PDPO_SAFETY_DUAL_ENABLED:-true}" in script
+    assert "pdpo_safety_dual_eta" in script
+    assert "pdpo_safety_dual_wrong_high_target" in script
 
 
 def test_coding_script_prefers_eurus_train_and_eval_data():

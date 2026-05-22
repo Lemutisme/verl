@@ -151,9 +151,10 @@ For `pdpo`, it extracts numeric aux channels from `data.non_tensor_batch`:
 2. group-normalize each auxiliary channel independently.
 3. skip auxiliary channels with no group variance.
 4. estimate per-channel reliability from mixed-outcome groups.
-5. preserve main-reward ordering in mixed-outcome groups with strict no-crossing.
-6. use auxiliary guidance freely only when main reward is flat, and only within same-main buckets otherwise.
-7. apply the existing selective sharpness damping controller.
+5. update per-channel safety duals when aux channels are high on wrong samples or fail the correct-minus-wrong margin.
+6. preserve main-reward ordering in mixed-outcome groups with strict no-crossing.
+7. use auxiliary guidance freely only when main reward is flat, and only within same-main buckets otherwise.
+8. apply the existing selective sharpness damping controller.
 
 Metrics emitted include:
 
@@ -172,6 +173,9 @@ Metrics emitted include:
 - per-channel `pdpo/channel/<name>/weight`
 - per-channel `pdpo/channel/<name>/effective_weight`
 - per-channel `pdpo/channel/<name>/reliability`
+- per-channel `pdpo/channel/<name>/safety_dual_mu`
+- per-channel `pdpo/channel/<name>/safety_dual_scale`
+- per-channel `pdpo/channel/<name>/safety_dual_violation`
 - per-channel `pdpo/channel/<name>/wrong_high_rate`
 
 ## Usage
@@ -284,6 +288,12 @@ CODING_WEIGHT_BLOCK_LEVEL_PROCESS_REWARD=0.0
 | `PDPO_RELIABILITY_NEGATIVE_TOLERANCE` | `reward_model.reward_kwargs.pdpo_reliability_negative_tolerance` | `0.02` | Anti-correlation tolerance before strong downweighting |
 | `PDPO_RELIABILITY_WRONG_HIGH_THRESHOLD` | `reward_model.reward_kwargs.pdpo_reliability_wrong_high_threshold` | `0.30` | Aux score treated as high on wrong samples |
 | `PDPO_RELIABILITY_WRONG_HIGH_TARGET` | `reward_model.reward_kwargs.pdpo_reliability_wrong_high_target` | `0.20` | Wrong high-rate tolerated before downweighting |
+| `PDPO_SAFETY_DUAL_ENABLED` | `reward_model.reward_kwargs.pdpo_safety_dual_enabled` | `true` | Enable PDPO-internal per-channel safety dual scaling |
+| `PDPO_SAFETY_DUAL_ETA` | `reward_model.reward_kwargs.pdpo_safety_dual_eta` | `0.05` | Safety dual update rate |
+| `PDPO_SAFETY_DUAL_MU_MAX` | `reward_model.reward_kwargs.pdpo_safety_dual_mu_max` | `6.0` | Max per-channel safety dual value |
+| `PDPO_SAFETY_DUAL_DECAY` | `reward_model.reward_kwargs.pdpo_safety_dual_decay` | `0.0` | Optional recovery decay for safety dual values |
+| `PDPO_SAFETY_DUAL_TARGET_MARGIN` | `reward_model.reward_kwargs.pdpo_safety_dual_target_margin` | `0.02` | Required correct-minus-wrong aux margin before no dual penalty |
+| `PDPO_SAFETY_DUAL_WRONG_HIGH_TARGET` | `reward_model.reward_kwargs.pdpo_safety_dual_wrong_high_target` | `0.20` | Wrong high-rate tolerated before safety dual penalty |
 | `PDPO_ETA_S` | `reward_model.reward_kwargs.pdpo_eta_s` | `0.01` | Sharpness dual step size |
 | `PDPO_LAMBDA_S_MAX` | `reward_model.reward_kwargs.pdpo_lambda_s_max` | `2.0` | Max damping strength |
 | `PDPO_TAU_S` | `reward_model.reward_kwargs.pdpo_tau_s` | `1.5` | Target group advantage std |

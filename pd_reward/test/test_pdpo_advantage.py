@@ -234,3 +234,63 @@ def test_aligned_channel_reliability_keeps_effective_weight():
     metrics = pdpo_advantage.PDPO_METRICS
     assert metrics["pdpo/channel/math_step_arithmetic_validity_reward/reliability"] == pytest.approx(1.0)
     assert metrics["pdpo/channel/math_step_arithmetic_validity_reward/effective_weight"] == pytest.approx(1.0)
+
+
+def test_safety_dual_penalizes_antialigned_channel_without_reward_mixing():
+    compute_pdpo_advantage = _load_pdpo()
+
+    compute_pdpo_advantage(
+        token_level_rewards=_make_token_rewards([0.0, 1.0, 0.0, 1.0]),
+        response_mask=torch.ones(4, 4),
+        index=np.array(["g1", "g1", "g1", "g1"]),
+        pdpo_aux_rewards_dict={
+            "math_step_arithmetic_validity_reward": [1.0, 0.0, 1.0, 0.0],
+        },
+        pdpo_config_dict={
+            "pdpo_eta_s": "0.0",
+            "pdpo_reliability_enabled": "false",
+            "pdpo_safety_dual_enabled": "true",
+            "pdpo_safety_dual_eta": "1.0",
+            "pdpo_safety_dual_target_margin": "0.02",
+            "pdpo_safety_dual_wrong_high_target": "0.20",
+            "math_weight_step_arithmetic_validity_reward": "1.0",
+        },
+    )
+
+    import pdpo_advantage
+
+    prefix = "pdpo/channel/math_step_arithmetic_validity_reward"
+    metrics = pdpo_advantage.PDPO_METRICS
+    assert metrics[f"{prefix}/safety_dual_violation"] > 0.0
+    assert metrics[f"{prefix}/safety_dual_mu"] > 0.0
+    assert 0.0 < metrics[f"{prefix}/safety_dual_scale"] < 1.0
+    assert metrics[f"{prefix}/effective_weight"] < metrics[f"{prefix}/weight"]
+
+
+def test_safety_dual_keeps_aligned_channel_unpenalized():
+    compute_pdpo_advantage = _load_pdpo()
+
+    compute_pdpo_advantage(
+        token_level_rewards=_make_token_rewards([0.0, 1.0, 0.0, 1.0]),
+        response_mask=torch.ones(4, 4),
+        index=np.array(["g1", "g1", "g1", "g1"]),
+        pdpo_aux_rewards_dict={
+            "math_step_arithmetic_validity_reward": [0.0, 1.0, 0.0, 1.0],
+        },
+        pdpo_config_dict={
+            "pdpo_eta_s": "0.0",
+            "pdpo_reliability_enabled": "false",
+            "pdpo_safety_dual_enabled": "true",
+            "pdpo_safety_dual_eta": "1.0",
+            "math_weight_step_arithmetic_validity_reward": "1.0",
+        },
+    )
+
+    import pdpo_advantage
+
+    prefix = "pdpo/channel/math_step_arithmetic_validity_reward"
+    metrics = pdpo_advantage.PDPO_METRICS
+    assert metrics[f"{prefix}/safety_dual_violation"] == pytest.approx(0.0)
+    assert metrics[f"{prefix}/safety_dual_mu"] == pytest.approx(0.0)
+    assert metrics[f"{prefix}/safety_dual_scale"] == pytest.approx(1.0)
+    assert metrics[f"{prefix}/effective_weight"] == pytest.approx(1.0)

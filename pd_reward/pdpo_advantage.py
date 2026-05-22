@@ -9,6 +9,7 @@ group-normalised independently before aggregation.
 
 from __future__ import annotations
 
+import math
 from collections import defaultdict
 from dataclasses import asdict, dataclass, field, is_dataclass
 from typing import Any, Optional
@@ -47,6 +48,13 @@ class PDPOConfig:
     reliability_wrong_high_threshold: float = 0.30
     reliability_wrong_high_target: float = 0.20
 
+    safety_dual_enabled: bool = True
+    safety_dual_eta: float = 0.05
+    safety_dual_mu_max: float = 6.0
+    safety_dual_decay: float = 0.0
+    safety_dual_target_margin: float = 0.02
+    safety_dual_wrong_high_target: float = 0.20
+
     eta_s: float = 0.01
     lambda_s_max: float = 2.0
     tau_s: float = 1.5
@@ -84,6 +92,7 @@ class PDPOState:
     sharpness_ema: float = 0.0
     step: int = 0
     channel_reliability: dict[str, float] = field(default_factory=dict)
+    channel_safety_dual: dict[str, float] = field(default_factory=dict)
 
 
 _PDPO_STATE: Optional[PDPOState] = None
@@ -387,6 +396,49 @@ def _effective_channel_weight(
     return base_weight * scale, reliability
 
 
+def _safety_dual_violation(stats: dict[str, float], cfg: PDPOConfig, eps: float) -> float:
+    if stats["comparable_groups"] <= 0.0:
+        return 0.0
+
+    target_margin = max(0.0, cfg.safety_dual_target_margin)
+    margin_violation = max(0.0, target_margin - stats["correct_minus_wrong"])
+
+    wrong_high_target = _clamp(cfg.safety_dual_wrong_high_target, 0.0, 1.0)
+    wrong_high_excess = max(0.0, stats["wrong_high_rate"] - wrong_high_target)
+    if wrong_high_target < 1.0:
+        wrong_high_violation = wrong_high_excess / max(1.0 - wrong_high_target, eps)
+    else:
+        wrong_high_violation = 0.0
+
+    return float(margin_violation + wrong_high_violation)
+
+
+def _update_safety_dual(
+    state: PDPOState,
+    cfg: PDPOConfig,
+    name: str,
+    stats: dict[str, float],
+    eps: float,
+) -> tuple[float, float, float]:
+    if not cfg.safety_dual_enabled:
+        return 0.0, 1.0, 0.0
+
+    old_mu = state.channel_safety_dual.get(name, 0.0)
+    violation = _safety_dual_violation(stats, cfg, eps)
+    mu = old_mu
+
+    if stats["comparable_groups"] > 0.0:
+        decay = _clamp(cfg.safety_dual_decay, 0.0, 1.0)
+        mu = max(0.0, old_mu * (1.0 - decay))
+        mu = mu + max(0.0, cfg.safety_dual_eta) * violation
+        mu = _clamp(mu, 0.0, max(0.0, cfg.safety_dual_mu_max))
+        state.channel_safety_dual[name] = mu
+    elif name not in state.channel_safety_dual:
+        state.channel_safety_dual[name] = mu
+
+    return float(mu), float(math.exp(-mu)), float(violation)
+
+
 def _combine_correctness_safe(
     main_adv: torch.Tensor,
     aux_component: torch.Tensor,
@@ -538,17 +590,29 @@ def compute_pdpo_advantage(
             aux_scores = torch.where(gate_mask, aux_scores, aux_scores * closed_scale)
 
         reliability_stats = _channel_reliability_stats(aux_scores, main_scores, id2indices, cfg, eps)
-        effective_weight, reliability = _effective_channel_weight(
+        reliability_weight, reliability = _effective_channel_weight(
             state,
             cfg,
             name,
             base_weight,
             reliability_stats,
         )
+        safety_dual_mu, safety_dual_scale, safety_dual_violation = _update_safety_dual(
+            state,
+            cfg,
+            name,
+            reliability_stats,
+            eps,
+        )
+        effective_weight = reliability_weight * safety_dual_scale
         metric_name = name.replace("/", "_")
         channel_metrics[f"pdpo/channel/{metric_name}/weight"] = float(base_weight)
+        channel_metrics[f"pdpo/channel/{metric_name}/reliability_weight"] = float(reliability_weight)
         channel_metrics[f"pdpo/channel/{metric_name}/effective_weight"] = float(effective_weight)
         channel_metrics[f"pdpo/channel/{metric_name}/reliability"] = float(reliability)
+        channel_metrics[f"pdpo/channel/{metric_name}/safety_dual_mu"] = float(safety_dual_mu)
+        channel_metrics[f"pdpo/channel/{metric_name}/safety_dual_scale"] = float(safety_dual_scale)
+        channel_metrics[f"pdpo/channel/{metric_name}/safety_dual_violation"] = float(safety_dual_violation)
         channel_metrics[f"pdpo/channel/{metric_name}/batch_reliability"] = reliability_stats["batch_reliability"]
         channel_metrics[f"pdpo/channel/{metric_name}/correct_mean"] = reliability_stats["correct_mean"]
         channel_metrics[f"pdpo/channel/{metric_name}/wrong_mean"] = reliability_stats["wrong_mean"]
@@ -633,6 +697,7 @@ def compute_pdpo_advantage(
         "pdpo/correctness_safe_clamp_count": float(safety_clamp_count),
         "pdpo/correctness_margin_min": float(correctness_margin_min),
         "pdpo/reliability_enabled": float(cfg.reliability_enabled),
+        "pdpo/safety_dual_enabled": float(cfg.safety_dual_enabled),
         "pdpo/step": float(state.step),
     }
     if gate_scores is not None:
