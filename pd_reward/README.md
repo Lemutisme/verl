@@ -167,15 +167,19 @@ Metrics emitted include:
 - `pdpo/beta_tie`
 - `pdpo/beta_same`
 - `pdpo/lambda_aux`
+- `pdpo/lambda_aux_effective`
 - `pdpo/correctness_safe_clamp_count`
 - `pdpo/correctness_margin_min`
 - per-channel `pdpo/channel/<name>/mean`
 - per-channel `pdpo/channel/<name>/weight`
 - per-channel `pdpo/channel/<name>/effective_weight`
+- per-channel `pdpo/channel/<name>/preference_weight`
 - per-channel `pdpo/channel/<name>/reliability`
 - per-channel `pdpo/channel/<name>/safety_dual_mu`
 - per-channel `pdpo/channel/<name>/safety_dual_scale`
 - per-channel `pdpo/channel/<name>/safety_dual_violation`
+- per-channel `pdpo/channel/<name>/safety_dual_pressure`
+- per-channel `pdpo/channel/<name>/safety_dual_updated`
 - per-channel `pdpo/channel/<name>/wrong_high_rate`
 
 ## Usage
@@ -274,10 +278,15 @@ CODING_WEIGHT_BLOCK_LEVEL_PROCESS_REWARD=0.0
 | `PDPO_BETA_SAME` | `reward_model.reward_kwargs.pdpo_beta_same` | `0.70` | Aux strength when main reward is flat in group |
 | `PDPO_BETA_TIE` | `reward_model.reward_kwargs.pdpo_beta_tie` | `0.20` | Aux strength when main reward already varies |
 | `PDPO_LAMBDA_AUX` | `reward_model.reward_kwargs.pdpo_lambda_aux` | `0.70` | Global multiplier for aux advantages |
+| `PDPO_LAMBDA_AUX_START` | `reward_model.reward_kwargs.pdpo_lambda_aux_start` | `0.30` | Initial aux multiplier during warmup |
+| `PDPO_LAMBDA_AUX_WARMUP_STEPS` | `reward_model.reward_kwargs.pdpo_lambda_aux_warmup_steps` | `100` | Internal PDPO steps to ramp aux multiplier to `PDPO_LAMBDA_AUX` |
 | `PDPO_MIN_AUX_STD` | `reward_model.reward_kwargs.pdpo_min_aux_std` | `1e-6` | Minimum group std for an aux channel to be active |
 | `PDPO_MIN_MAIN_STD` | `reward_model.reward_kwargs.pdpo_min_main_std` | `1e-6` | Minimum main-reward group std to treat main as informative |
+| `PDPO_ANSWER_GATE_CHANNEL` | `reward_model.reward_kwargs.pdpo_answer_gate_channel` | math: `math_answer_extractability_reward`, code: `coding_code_extractability_reward` | Channel used as the answer/code extractability gate |
 | `PDPO_ANSWER_GATE_MIN` | `reward_model.reward_kwargs.pdpo_answer_gate_min` | `0.5` | Minimum answer-extractability score needed for full non-answer aux credit |
 | `PDPO_ANSWER_GATE_CLOSED_SCALE` | `reward_model.reward_kwargs.pdpo_answer_gate_closed_scale` | `0.0` | Multiplier for non-answer aux channels when the answer gate is closed |
+| `PDPO_ANSWER_GATE_AS_CONSTRAINT` | `reward_model.reward_kwargs.pdpo_answer_gate_as_constraint` | `true` | Use answer extractability as a gate/constraint instead of a direct preference reward |
+| `PDPO_ANSWER_GATE_PREFERENCE_SCALE` | `reward_model.reward_kwargs.pdpo_answer_gate_preference_scale` | `0.0` | Residual preference weight for the answer-gate channel when used as a constraint |
 | `PDPO_CORRECTNESS_SAFE` | `reward_model.reward_kwargs.pdpo_correctness_safe` | `true` | Preserve main-reward ordering in mixed-outcome groups |
 | `PDPO_CORRECTNESS_MARGIN` | `reward_model.reward_kwargs.pdpo_correctness_margin` | `1e-3` | Minimum gap between adjacent main-reward buckets after aux shaping |
 | `PDPO_RELIABILITY_ENABLED` | `reward_model.reward_kwargs.pdpo_reliability_enabled` | `true` | Enable per-channel reliability scaling |
@@ -288,12 +297,17 @@ CODING_WEIGHT_BLOCK_LEVEL_PROCESS_REWARD=0.0
 | `PDPO_RELIABILITY_NEGATIVE_TOLERANCE` | `reward_model.reward_kwargs.pdpo_reliability_negative_tolerance` | `0.02` | Anti-correlation tolerance before strong downweighting |
 | `PDPO_RELIABILITY_WRONG_HIGH_THRESHOLD` | `reward_model.reward_kwargs.pdpo_reliability_wrong_high_threshold` | `0.30` | Aux score treated as high on wrong samples |
 | `PDPO_RELIABILITY_WRONG_HIGH_TARGET` | `reward_model.reward_kwargs.pdpo_reliability_wrong_high_target` | `0.20` | Wrong high-rate tolerated before downweighting |
+| `PDPO_RELIABILITY_MIN_COMPARABLE_GROUPS` | `reward_model.reward_kwargs.pdpo_reliability_min_comparable_groups` | `4` | Minimum comparable prompt groups before updating reliability EMA |
+| `PDPO_RELIABILITY_WRONG_HIGH_SMOOTHING` | `reward_model.reward_kwargs.pdpo_reliability_wrong_high_smoothing` | `1.0` | Beta-style smoothing mass for wrong-high-rate estimates |
 | `PDPO_SAFETY_DUAL_ENABLED` | `reward_model.reward_kwargs.pdpo_safety_dual_enabled` | `true` | Enable PDPO-internal per-channel safety dual scaling |
 | `PDPO_SAFETY_DUAL_ETA` | `reward_model.reward_kwargs.pdpo_safety_dual_eta` | `0.05` | Safety dual update rate |
 | `PDPO_SAFETY_DUAL_MU_MAX` | `reward_model.reward_kwargs.pdpo_safety_dual_mu_max` | `6.0` | Max per-channel safety dual value |
 | `PDPO_SAFETY_DUAL_DECAY` | `reward_model.reward_kwargs.pdpo_safety_dual_decay` | `0.0` | Optional recovery decay for safety dual values |
 | `PDPO_SAFETY_DUAL_TARGET_MARGIN` | `reward_model.reward_kwargs.pdpo_safety_dual_target_margin` | `0.02` | Required correct-minus-wrong aux margin before no dual penalty |
 | `PDPO_SAFETY_DUAL_WRONG_HIGH_TARGET` | `reward_model.reward_kwargs.pdpo_safety_dual_wrong_high_target` | `0.20` | Wrong high-rate tolerated before safety dual penalty |
+| `PDPO_SAFETY_DUAL_MIN_COMPARABLE_GROUPS` | `reward_model.reward_kwargs.pdpo_safety_dual_min_comparable_groups` | `4` | Minimum comparable prompt groups before primal-dual update |
+| `PDPO_SAFETY_DUAL_EMA_ALPHA` | `reward_model.reward_kwargs.pdpo_safety_dual_ema_alpha` | `0.10` | EMA rate for signed constraint pressure |
+| `PDPO_SAFETY_DUAL_RECOVERY_SCALE` | `reward_model.reward_kwargs.pdpo_safety_dual_recovery_scale` | `0.25` | Multiplier for negative pressure that recovers dual values |
 | `PDPO_ETA_S` | `reward_model.reward_kwargs.pdpo_eta_s` | `0.01` | Sharpness dual step size |
 | `PDPO_LAMBDA_S_MAX` | `reward_model.reward_kwargs.pdpo_lambda_s_max` | `2.0` | Max damping strength |
 | `PDPO_TAU_S` | `reward_model.reward_kwargs.pdpo_tau_s` | `1.5` | Target group advantage std |

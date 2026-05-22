@@ -202,14 +202,24 @@ def test_math_executable_preset_uses_revised_live_rewards_by_default():
     assert "MATH_WEIGHT_ANSWER_EXTRACTABILITY_REWARD=${MATH_WEIGHT_ANSWER_EXTRACTABILITY_REWARD:-0.15}" in script
     assert "PDPO_BETA_SAME=${PDPO_BETA_SAME:-0.70}" in script
     assert "PDPO_LAMBDA_AUX=${PDPO_LAMBDA_AUX:-0.70}" in script
+    assert "PDPO_LAMBDA_AUX_START=${PDPO_LAMBDA_AUX_START:-0.30}" in script
+    assert "PDPO_LAMBDA_AUX_WARMUP_STEPS=${PDPO_LAMBDA_AUX_WARMUP_STEPS:-100}" in script
+    assert "PDPO_ANSWER_GATE_CHANNEL=${PDPO_ANSWER_GATE_CHANNEL:-math_answer_extractability_reward}" in script
     assert "PDPO_ANSWER_GATE_MIN=${PDPO_ANSWER_GATE_MIN:-0.5}" in script
     assert "pdpo_answer_gate_closed_scale" in script
+    assert "PDPO_ANSWER_GATE_AS_CONSTRAINT=${PDPO_ANSWER_GATE_AS_CONSTRAINT:-true}" in script
+    assert "pdpo_answer_gate_preference_scale" in script
     assert "PDPO_CORRECTNESS_SAFE=${PDPO_CORRECTNESS_SAFE:-true}" in script
     assert "PDPO_RELIABILITY_ENABLED=${PDPO_RELIABILITY_ENABLED:-true}" in script
     assert "pdpo_reliability_wrong_high_threshold" in script
+    assert "pdpo_reliability_min_comparable_groups" in script
+    assert "pdpo_reliability_wrong_high_smoothing" in script
     assert "PDPO_SAFETY_DUAL_ENABLED=${PDPO_SAFETY_DUAL_ENABLED:-true}" in script
     assert "pdpo_safety_dual_eta" in script
     assert "pdpo_safety_dual_wrong_high_target" in script
+    assert "pdpo_safety_dual_min_comparable_groups" in script
+    assert "pdpo_safety_dual_ema_alpha" in script
+    assert "pdpo_safety_dual_recovery_scale" in script
 
 
 def test_math_reward_presets_only_include_active_matrix():
@@ -248,6 +258,11 @@ def test_coding_pdpo_script_defaults_to_general_aux_rewards():
     assert "PDPO_SAFETY_DUAL_ENABLED=${PDPO_SAFETY_DUAL_ENABLED:-true}" in script
     assert "pdpo_safety_dual_eta" in script
     assert "pdpo_safety_dual_wrong_high_target" in script
+    assert "PDPO_LAMBDA_AUX_WARMUP_STEPS=${PDPO_LAMBDA_AUX_WARMUP_STEPS:-100}" in script
+    assert "PDPO_ANSWER_GATE_CHANNEL=${PDPO_ANSWER_GATE_CHANNEL:-coding_code_extractability_reward}" in script
+    assert "PDPO_ANSWER_GATE_AS_CONSTRAINT=${PDPO_ANSWER_GATE_AS_CONSTRAINT:-true}" in script
+    assert "pdpo_reliability_min_comparable_groups" in script
+    assert "pdpo_safety_dual_recovery_scale" in script
 
 
 def test_coding_script_prefers_eurus_train_and_eval_data():
