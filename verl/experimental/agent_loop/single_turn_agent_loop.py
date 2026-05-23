@@ -37,6 +37,11 @@ class SingleTurnAgentLoop(AgentLoopBase):
     @rollout_trace_op
     async def run(self, sampling_params: dict[str, Any], **kwargs) -> AgentLoopOutput:
         messages = list(kwargs["raw_prompt"])
+        response_length = int(
+            sampling_params.get("max_tokens")
+            or sampling_params.get("max_new_tokens")
+            or self.response_length
+        )
 
         # 1. extract multimodal inputs from messages
         multi_modal_data = await self.process_multi_modal_info(messages)
@@ -72,11 +77,11 @@ class SingleTurnAgentLoop(AgentLoopBase):
 
         output: AgentLoopOutput = AgentLoopOutput(
             prompt_ids=prompt_ids,
-            response_ids=output.token_ids[: self.response_length],
-            response_mask=response_mask[: self.response_length],
-            response_logprobs=output.log_probs[: self.response_length] if output.log_probs else None,
+            response_ids=output.token_ids[:response_length],
+            response_mask=response_mask[:response_length],
+            response_logprobs=output.log_probs[:response_length] if output.log_probs else None,
             routed_experts=(
-                output.routed_experts[: len(prompt_ids) + self.response_length]
+                output.routed_experts[: len(prompt_ids) + response_length]
                 if output.routed_experts is not None
                 else None
             ),

@@ -500,7 +500,7 @@ EXP_NAME=${EXP_NAME:-"${DEFAULT_EXP_NAME}"}
 ADV_ESTIMATOR=${ADV_ESTIMATOR:-"grpo"}
 
 # PDPO hyperparameters
-PDPO_BETA_TIE=${PDPO_BETA_TIE:-0.20}
+PDPO_BETA_TIE=${PDPO_BETA_TIE:-0.0}
 PDPO_BETA_SAME=${PDPO_BETA_SAME:-0.70}
 PDPO_LAMBDA_AUX=${PDPO_LAMBDA_AUX:-0.70}
 PDPO_LAMBDA_AUX_START=${PDPO_LAMBDA_AUX_START:-0.30}
@@ -522,6 +522,8 @@ PDPO_RELIABILITY_TARGET_MARGIN=${PDPO_RELIABILITY_TARGET_MARGIN:-0.02}
 PDPO_RELIABILITY_NEGATIVE_TOLERANCE=${PDPO_RELIABILITY_NEGATIVE_TOLERANCE:-0.02}
 PDPO_RELIABILITY_WRONG_HIGH_THRESHOLD=${PDPO_RELIABILITY_WRONG_HIGH_THRESHOLD:-0.30}
 PDPO_RELIABILITY_WRONG_HIGH_TARGET=${PDPO_RELIABILITY_WRONG_HIGH_TARGET:-0.20}
+PDPO_RELIABILITY_PAIRWISE_TARGET=${PDPO_RELIABILITY_PAIRWISE_TARGET:-0.55}
+PDPO_RELIABILITY_INVERSION_TARGET=${PDPO_RELIABILITY_INVERSION_TARGET:-0.20}
 PDPO_RELIABILITY_MIN_COMPARABLE_GROUPS=${PDPO_RELIABILITY_MIN_COMPARABLE_GROUPS:-4}
 PDPO_RELIABILITY_WRONG_HIGH_SMOOTHING=${PDPO_RELIABILITY_WRONG_HIGH_SMOOTHING:-1.0}
 PDPO_SAFETY_DUAL_ENABLED=${PDPO_SAFETY_DUAL_ENABLED:-true}
@@ -530,6 +532,7 @@ PDPO_SAFETY_DUAL_MU_MAX=${PDPO_SAFETY_DUAL_MU_MAX:-6.0}
 PDPO_SAFETY_DUAL_DECAY=${PDPO_SAFETY_DUAL_DECAY:-0.0}
 PDPO_SAFETY_DUAL_TARGET_MARGIN=${PDPO_SAFETY_DUAL_TARGET_MARGIN:-0.02}
 PDPO_SAFETY_DUAL_WRONG_HIGH_TARGET=${PDPO_SAFETY_DUAL_WRONG_HIGH_TARGET:-0.20}
+PDPO_SAFETY_DUAL_INVERSION_TARGET=${PDPO_SAFETY_DUAL_INVERSION_TARGET:-0.20}
 PDPO_SAFETY_DUAL_MIN_COMPARABLE_GROUPS=${PDPO_SAFETY_DUAL_MIN_COMPARABLE_GROUPS:-4}
 PDPO_SAFETY_DUAL_EMA_ALPHA=${PDPO_SAFETY_DUAL_EMA_ALPHA:-0.10}
 PDPO_SAFETY_DUAL_RECOVERY_SCALE=${PDPO_SAFETY_DUAL_RECOVERY_SCALE:-0.25}
@@ -550,11 +553,21 @@ BEST_CHECKPOINT_METRIC=${BEST_CHECKPOINT_METRIC:-"auto"}
 
 MAX_PROMPT_LENGTH=${MAX_PROMPT_LENGTH:-1024}
 MAX_RESPONSE_LENGTH=${MAX_RESPONSE_LENGTH:-4096}
+EVAL_MAX_RESPONSE_LENGTH=${EVAL_MAX_RESPONSE_LENGTH:-8192}
+
+EFFECTIVE_MAX_RESPONSE_LENGTH="${MAX_RESPONSE_LENGTH}"
+if [[ "${EVAL_MAX_RESPONSE_LENGTH}" -gt "${EFFECTIVE_MAX_RESPONSE_LENGTH}" ]]; then
+  EFFECTIVE_MAX_RESPONSE_LENGTH="${EVAL_MAX_RESPONSE_LENGTH}"
+fi
+VLLM_MAX_MODEL_LEN=${VLLM_MAX_MODEL_LEN:-$((MAX_PROMPT_LENGTH + EFFECTIVE_MAX_RESPONSE_LENGTH))}
 
 NNODES=${NNODES:-1}
 
 TEMPERATURE=${TEMPERATURE:-1.0}
 TOP_P=${TOP_P:-0.95}
+PPO_CLIP_RATIO=${PPO_CLIP_RATIO:-0.2}
+PPO_CLIP_RATIO_LOW=${PPO_CLIP_RATIO_LOW:-0.2}
+PPO_CLIP_RATIO_HIGH=${PPO_CLIP_RATIO_HIGH:-0.3}
 
 SP_SIZE=${SP_SIZE:-1}
 USE_DYNAMIC_BSZ=${USE_DYNAMIC_BSZ:-true}
@@ -741,6 +754,9 @@ CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES} python3 -m verl.trainer.main_ppo \
   algorithm.adv_estimator="${ADV_ESTIMATOR}" \
   "${GDPO_ARGS[@]}" \
   actor_rollout_ref.model.use_remove_padding=true \
+  actor_rollout_ref.actor.clip_ratio="${PPO_CLIP_RATIO}" \
+  actor_rollout_ref.actor.clip_ratio_low="${PPO_CLIP_RATIO_LOW}" \
+  actor_rollout_ref.actor.clip_ratio_high="${PPO_CLIP_RATIO_HIGH}" \
   actor_rollout_ref.actor.use_dynamic_bsz="${USE_DYNAMIC_BSZ}" \
   actor_rollout_ref.ref.log_prob_use_dynamic_bsz="${USE_DYNAMIC_BSZ}" \
   actor_rollout_ref.rollout.log_prob_use_dynamic_bsz="${USE_DYNAMIC_BSZ}" \
@@ -760,7 +776,8 @@ CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES} python3 -m verl.trainer.main_ppo \
   actor_rollout_ref.rollout.enable_chunked_prefill=true \
   actor_rollout_ref.rollout.temperature="${TEMPERATURE}" \
   actor_rollout_ref.rollout.top_p="${TOP_P}" \
-  actor_rollout_ref.rollout.max_model_len="${VLLM_MAX_MODEL_LEN:-4096}" \
+  actor_rollout_ref.rollout.max_model_len="${VLLM_MAX_MODEL_LEN}" \
+  actor_rollout_ref.rollout.val_kwargs.max_tokens="${EVAL_MAX_RESPONSE_LENGTH}" \
   actor_rollout_ref.rollout.name=vllm \
   actor_rollout_ref.rollout.agent.num_workers="${AGENT_NUM_WORKERS}" \
   actor_rollout_ref.rollout.free_cache_engine="${FREE_CACHE_ENGINE}" \
@@ -822,6 +839,8 @@ CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES} python3 -m verl.trainer.main_ppo \
   ++reward_model.reward_kwargs.pdpo_reliability_negative_tolerance="${PDPO_RELIABILITY_NEGATIVE_TOLERANCE}" \
   ++reward_model.reward_kwargs.pdpo_reliability_wrong_high_threshold="${PDPO_RELIABILITY_WRONG_HIGH_THRESHOLD}" \
   ++reward_model.reward_kwargs.pdpo_reliability_wrong_high_target="${PDPO_RELIABILITY_WRONG_HIGH_TARGET}" \
+  ++reward_model.reward_kwargs.pdpo_reliability_pairwise_target="${PDPO_RELIABILITY_PAIRWISE_TARGET}" \
+  ++reward_model.reward_kwargs.pdpo_reliability_inversion_target="${PDPO_RELIABILITY_INVERSION_TARGET}" \
   ++reward_model.reward_kwargs.pdpo_reliability_min_comparable_groups="${PDPO_RELIABILITY_MIN_COMPARABLE_GROUPS}" \
   ++reward_model.reward_kwargs.pdpo_reliability_wrong_high_smoothing="${PDPO_RELIABILITY_WRONG_HIGH_SMOOTHING}" \
   ++reward_model.reward_kwargs.pdpo_safety_dual_enabled="${PDPO_SAFETY_DUAL_ENABLED}" \
@@ -830,6 +849,7 @@ CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES} python3 -m verl.trainer.main_ppo \
   ++reward_model.reward_kwargs.pdpo_safety_dual_decay="${PDPO_SAFETY_DUAL_DECAY}" \
   ++reward_model.reward_kwargs.pdpo_safety_dual_target_margin="${PDPO_SAFETY_DUAL_TARGET_MARGIN}" \
   ++reward_model.reward_kwargs.pdpo_safety_dual_wrong_high_target="${PDPO_SAFETY_DUAL_WRONG_HIGH_TARGET}" \
+  ++reward_model.reward_kwargs.pdpo_safety_dual_inversion_target="${PDPO_SAFETY_DUAL_INVERSION_TARGET}" \
   ++reward_model.reward_kwargs.pdpo_safety_dual_min_comparable_groups="${PDPO_SAFETY_DUAL_MIN_COMPARABLE_GROUPS}" \
   ++reward_model.reward_kwargs.pdpo_safety_dual_ema_alpha="${PDPO_SAFETY_DUAL_EMA_ALPHA}" \
   ++reward_model.reward_kwargs.pdpo_safety_dual_recovery_scale="${PDPO_SAFETY_DUAL_RECOVERY_SCALE}" \

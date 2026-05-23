@@ -200,6 +200,7 @@ def test_math_executable_preset_uses_revised_live_rewards_by_default():
     assert "MATH_WEIGHT_PREFIX_CONSISTENCY_REWARD=${MATH_WEIGHT_PREFIX_CONSISTENCY_REWARD:-0.15}" in script
     assert "MATH_WEIGHT_TRACE_EFFICIENCY_REWARD=${MATH_WEIGHT_TRACE_EFFICIENCY_REWARD:-0.35}" in script
     assert "MATH_WEIGHT_ANSWER_EXTRACTABILITY_REWARD=${MATH_WEIGHT_ANSWER_EXTRACTABILITY_REWARD:-0.15}" in script
+    assert "PDPO_BETA_TIE=${PDPO_BETA_TIE:-0.0}" in script
     assert "PDPO_BETA_SAME=${PDPO_BETA_SAME:-0.70}" in script
     assert "PDPO_LAMBDA_AUX=${PDPO_LAMBDA_AUX:-0.70}" in script
     assert "PDPO_LAMBDA_AUX_START=${PDPO_LAMBDA_AUX_START:-0.30}" in script
@@ -212,11 +213,14 @@ def test_math_executable_preset_uses_revised_live_rewards_by_default():
     assert "PDPO_CORRECTNESS_SAFE=${PDPO_CORRECTNESS_SAFE:-true}" in script
     assert "PDPO_RELIABILITY_ENABLED=${PDPO_RELIABILITY_ENABLED:-true}" in script
     assert "pdpo_reliability_wrong_high_threshold" in script
+    assert "pdpo_reliability_pairwise_target" in script
+    assert "pdpo_reliability_inversion_target" in script
     assert "pdpo_reliability_min_comparable_groups" in script
     assert "pdpo_reliability_wrong_high_smoothing" in script
     assert "PDPO_SAFETY_DUAL_ENABLED=${PDPO_SAFETY_DUAL_ENABLED:-true}" in script
     assert "pdpo_safety_dual_eta" in script
     assert "pdpo_safety_dual_wrong_high_target" in script
+    assert "pdpo_safety_dual_inversion_target" in script
     assert "pdpo_safety_dual_min_comparable_groups" in script
     assert "pdpo_safety_dual_ema_alpha" in script
     assert "pdpo_safety_dual_recovery_scale" in script
@@ -258,9 +262,11 @@ def test_coding_pdpo_script_defaults_to_general_aux_rewards():
     assert "PDPO_SAFETY_DUAL_ENABLED=${PDPO_SAFETY_DUAL_ENABLED:-true}" in script
     assert "pdpo_safety_dual_eta" in script
     assert "pdpo_safety_dual_wrong_high_target" in script
+    assert "pdpo_safety_dual_inversion_target" in script
     assert "PDPO_LAMBDA_AUX_WARMUP_STEPS=${PDPO_LAMBDA_AUX_WARMUP_STEPS:-100}" in script
     assert "PDPO_ANSWER_GATE_CHANNEL=${PDPO_ANSWER_GATE_CHANNEL:-coding_code_extractability_reward}" in script
     assert "PDPO_ANSWER_GATE_AS_CONSTRAINT=${PDPO_ANSWER_GATE_AS_CONSTRAINT:-true}" in script
+    assert "pdpo_reliability_pairwise_target" in script
     assert "pdpo_reliability_min_comparable_groups" in script
     assert "pdpo_safety_dual_recovery_scale" in script
 

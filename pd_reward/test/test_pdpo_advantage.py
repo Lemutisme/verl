@@ -89,6 +89,69 @@ def test_main_reward_variance_keeps_correct_samples_above_antialigned_aux():
     assert scalars[3].item() > scalars[2].item()
 
 
+def test_mixed_group_without_main_ties_ignores_aux_preference_signal():
+    compute_pdpo_advantage = _load_pdpo()
+
+    main_only_adv, _ = compute_pdpo_advantage(
+        token_level_rewards=_make_token_rewards([0.0, 1.0]),
+        response_mask=torch.ones(2, 4),
+        index=np.array(["g1", "g1"]),
+        pdpo_aux_rewards_dict={},
+        pdpo_config_dict={
+            "pdpo_eta_s": "0.0",
+        },
+    )
+
+    reset_module = sys.modules.get("pdpo_advantage")
+    if reset_module is not None:
+        reset_module.reset_pdpo_state()
+
+    aux_adv, _ = compute_pdpo_advantage(
+        token_level_rewards=_make_token_rewards([0.0, 1.0]),
+        response_mask=torch.ones(2, 4),
+        index=np.array(["g1", "g1"]),
+        pdpo_aux_rewards_dict={
+            "math_step_arithmetic_validity_reward": [1.0, 0.0],
+        },
+        pdpo_config_dict={
+            "pdpo_beta_tie": "1.0",
+            "pdpo_lambda_aux": "10.0",
+            "pdpo_eta_s": "0.0",
+            "pdpo_reliability_enabled": "false",
+            "pdpo_safety_dual_enabled": "false",
+            "math_weight_step_arithmetic_validity_reward": "1.0",
+        },
+    )
+
+    assert torch.allclose(aux_adv[:, -1], main_only_adv[:, -1], atol=1e-6)
+
+
+def test_mixed_group_uses_aux_only_inside_same_main_reward_bucket():
+    compute_pdpo_advantage = _load_pdpo()
+
+    adv, _ = compute_pdpo_advantage(
+        token_level_rewards=_make_token_rewards([0.0, 0.0, 1.0, 1.0]),
+        response_mask=torch.ones(4, 4),
+        index=np.array(["g1", "g1", "g1", "g1"]),
+        pdpo_aux_rewards_dict={
+            "math_step_arithmetic_validity_reward": [0.0, 1.0, 0.0, 1.0],
+        },
+        pdpo_config_dict={
+            "pdpo_beta_tie": "1.0",
+            "pdpo_lambda_aux": "1.0",
+            "pdpo_eta_s": "0.0",
+            "pdpo_reliability_enabled": "false",
+            "pdpo_safety_dual_enabled": "false",
+            "math_weight_step_arithmetic_validity_reward": "1.0",
+        },
+    )
+
+    scalars = adv[:, -1]
+    assert scalars[1].item() > scalars[0].item()
+    assert scalars[3].item() > scalars[2].item()
+    assert min(scalars[2].item(), scalars[3].item()) > max(scalars[0].item(), scalars[1].item())
+
+
 def test_zero_variance_aux_channel_is_ignored():
     compute_pdpo_advantage = _load_pdpo()
 
@@ -208,6 +271,8 @@ def test_antialigned_channel_reliability_drops_effective_weight():
     import pdpo_advantage
 
     metrics = pdpo_advantage.PDPO_METRICS
+    assert metrics["pdpo/channel/math_step_arithmetic_validity_reward/pairwise_inversion_rate"] == pytest.approx(1.0)
+    assert metrics["pdpo/channel/math_step_arithmetic_validity_reward/pairwise_alignment_rate"] == pytest.approx(0.0)
     assert metrics["pdpo/channel/math_step_arithmetic_validity_reward/reliability"] == pytest.approx(0.0)
     assert metrics["pdpo/channel/math_step_arithmetic_validity_reward/effective_weight"] == pytest.approx(0.0)
 
@@ -232,6 +297,8 @@ def test_aligned_channel_reliability_keeps_effective_weight():
     import pdpo_advantage
 
     metrics = pdpo_advantage.PDPO_METRICS
+    assert metrics["pdpo/channel/math_step_arithmetic_validity_reward/pairwise_inversion_rate"] == pytest.approx(0.0)
+    assert metrics["pdpo/channel/math_step_arithmetic_validity_reward/pairwise_alignment_rate"] == pytest.approx(1.0)
     assert metrics["pdpo/channel/math_step_arithmetic_validity_reward/reliability"] == pytest.approx(1.0)
     assert metrics["pdpo/channel/math_step_arithmetic_validity_reward/effective_weight"] == pytest.approx(1.0)
 

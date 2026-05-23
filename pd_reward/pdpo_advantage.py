@@ -27,7 +27,7 @@ PDPO_METRICS: dict[str, float] = {}
 class PDPOConfig:
     """Hyper-parameters for PDPO advantage estimation."""
 
-    beta_tie: float = 0.20
+    beta_tie: float = 0.0
     beta_same: float = 0.70
     lambda_aux: float = 0.70
     lambda_aux_start: float = 0.30
@@ -51,6 +51,8 @@ class PDPOConfig:
     reliability_negative_tolerance: float = 0.02
     reliability_wrong_high_threshold: float = 0.30
     reliability_wrong_high_target: float = 0.20
+    reliability_pairwise_target: float = 0.55
+    reliability_inversion_target: float = 0.20
     reliability_min_comparable_groups: int = 1
     reliability_wrong_high_smoothing: float = 0.0
 
@@ -60,6 +62,7 @@ class PDPOConfig:
     safety_dual_decay: float = 0.0
     safety_dual_target_margin: float = 0.02
     safety_dual_wrong_high_target: float = 0.20
+    safety_dual_inversion_target: float = 0.20
     safety_dual_min_comparable_groups: int = 1
     safety_dual_ema_alpha: float = 0.10
     safety_dual_recovery_scale: float = 0.25
@@ -321,6 +324,10 @@ def _channel_reliability_stats(
     wrong_chunks: list[torch.Tensor] = []
     supporting_groups = 0
     comparable_groups = 0
+    pairwise_total = 0.0
+    pairwise_aligned = 0.0
+    pairwise_inverted = 0.0
+    pairwise_tied = 0.0
 
     for idxs in id2indices.values():
         if len(idxs) <= 1:
@@ -337,6 +344,18 @@ def _channel_reliability_stats(
             continue
 
         group_aux = aux_scores[idx_tensor]
+        higher_main = group_main[:, None] > group_main[None, :] + eps
+        if higher_main.any().item():
+            higher_aux = group_aux[:, None]
+            lower_aux = group_aux[None, :]
+            aligned = higher_main & (higher_aux > lower_aux + eps)
+            inverted = higher_main & (higher_aux + eps < lower_aux)
+            tied = higher_main & ~(aligned | inverted)
+            pairwise_total += float(higher_main.float().sum().item())
+            pairwise_aligned += float(aligned.float().sum().item())
+            pairwise_inverted += float(inverted.float().sum().item())
+            pairwise_tied += float(tied.float().sum().item())
+
         correct_aux = group_aux[correct_mask]
         wrong_aux = group_aux[wrong_mask]
         correct_chunks.append(correct_aux)
@@ -353,6 +372,10 @@ def _channel_reliability_stats(
             "correct_minus_wrong": 0.0,
             "wrong_high_rate": 0.0,
             "supports_correct_rate": 0.0,
+            "pairwise_alignment_rate": 0.0,
+            "pairwise_inversion_rate": 0.0,
+            "pairwise_tie_rate": 0.0,
+            "pairwise_total": 0.0,
             "batch_reliability": 1.0,
         }
 
@@ -378,7 +401,23 @@ def _channel_reliability_stats(
     else:
         excess_high = max(0.0, wrong_high_rate - wrong_high_target)
         wrong_high_penalty = _clamp(1.0 - excess_high / max(1.0 - wrong_high_target, eps), 0.0, 1.0)
-    batch_reliability = _clamp(gap_scale * wrong_high_penalty, 0.0, 1.0)
+    pairwise_alignment_rate = (pairwise_aligned + 0.5 * pairwise_tied) / max(pairwise_total, eps)
+    pairwise_inversion_rate = pairwise_inverted / max(pairwise_total, eps)
+    pairwise_tie_rate = pairwise_tied / max(pairwise_total, eps)
+    alignment_floor = 0.5
+    alignment_target = max(cfg.reliability_pairwise_target, alignment_floor + eps)
+    pairwise_scale = _clamp(
+        (pairwise_alignment_rate - alignment_floor) / max(alignment_target - alignment_floor, eps),
+        0.0,
+        1.0,
+    )
+    inversion_target = _clamp(cfg.reliability_inversion_target, 0.0, 1.0)
+    if inversion_target >= 1.0:
+        inversion_penalty = 1.0
+    else:
+        inversion_excess = max(0.0, pairwise_inversion_rate - inversion_target)
+        inversion_penalty = _clamp(1.0 - inversion_excess / max(1.0 - inversion_target, eps), 0.0, 1.0)
+    batch_reliability = _clamp(pairwise_scale * inversion_penalty * wrong_high_penalty, 0.0, 1.0)
 
     return {
         "comparable_groups": float(comparable_groups),
@@ -387,6 +426,14 @@ def _channel_reliability_stats(
         "correct_minus_wrong": gap,
         "wrong_high_rate": wrong_high_rate,
         "supports_correct_rate": float(supports_correct_rate),
+        "pairwise_alignment_rate": float(pairwise_alignment_rate),
+        "pairwise_inversion_rate": float(pairwise_inversion_rate),
+        "pairwise_tie_rate": float(pairwise_tie_rate),
+        "pairwise_total": float(pairwise_total),
+        "gap_reliability": float(gap_scale),
+        "wrong_high_reliability": float(wrong_high_penalty),
+        "pairwise_reliability": float(pairwise_scale),
+        "inversion_reliability": float(inversion_penalty),
         "batch_reliability": batch_reliability,
     }
 
@@ -426,12 +473,20 @@ def _safety_dual_constraint_signal(stats: dict[str, float], cfg: PDPOConfig, eps
         wrong_high_pressure = (stats["wrong_high_rate"] - wrong_high_target) / max(1.0 - wrong_high_target, eps)
     else:
         wrong_high_pressure = 0.0
+    inversion_target = _clamp(cfg.safety_dual_inversion_target, 0.0, 1.0)
+    if inversion_target < 1.0:
+        inversion_pressure = (stats.get("pairwise_inversion_rate", 0.0) - inversion_target) / max(
+            1.0 - inversion_target,
+            eps,
+        )
+    else:
+        inversion_pressure = 0.0
 
-    positive_violation = max(0.0, margin_pressure) + max(0.0, wrong_high_pressure)
+    positive_violation = max(0.0, margin_pressure) + max(0.0, inversion_pressure) + max(0.0, wrong_high_pressure)
     if positive_violation > 0.0:
         pressure = positive_violation
     else:
-        pressure = max(margin_pressure, wrong_high_pressure)
+        pressure = max(margin_pressure, inversion_pressure, wrong_high_pressure)
 
     return float(positive_violation), float(pressure)
 
@@ -555,6 +610,42 @@ def _effective_lambda_aux(state: PDPOState, cfg: PDPOConfig) -> float:
     start = _clamp(cfg.lambda_aux_start, 0.0, target)
     progress = _clamp(state.step / max(float(warmup_steps), 1.0), 0.0, 1.0)
     return start + (target - start) * progress
+
+
+def _lexicographic_aux_component(
+    aux_adv_sum: torch.Tensor,
+    main_scores: torch.Tensor,
+    id2indices: dict[Any, list[int]],
+    cfg: PDPOConfig,
+    eps: float,
+) -> torch.Tensor:
+    component = torch.zeros_like(aux_adv_sum)
+
+    for idxs in id2indices.values():
+        if len(idxs) <= 1:
+            continue
+        idx_tensor = torch.tensor(idxs, device=aux_adv_sum.device)
+        group_main = main_scores[idx_tensor]
+        group_aux = aux_adv_sum[idx_tensor]
+
+        if group_main.std().item() <= cfg.min_main_std:
+            component[idx_tensor] = cfg.beta_same * group_aux
+            continue
+
+        if cfg.beta_tie <= 0.0:
+            continue
+
+        unique_scores = torch.unique(group_main.detach(), sorted=True)
+        group_component = torch.zeros_like(group_aux)
+        for score in unique_scores:
+            bucket_mask = torch.isclose(group_main, score, atol=eps, rtol=0.0)
+            if bucket_mask.sum().item() <= 1:
+                continue
+            bucket_aux = group_aux[bucket_mask]
+            group_component[bucket_mask] = cfg.beta_tie * (bucket_aux - bucket_aux.mean())
+        component[idx_tensor] = group_component
+
+    return component
 
 
 @register_adv_est("pdpo")
@@ -684,6 +775,12 @@ def compute_pdpo_advantage(
         channel_metrics[f"pdpo/channel/{metric_name}/correct_minus_wrong"] = reliability_stats["correct_minus_wrong"]
         channel_metrics[f"pdpo/channel/{metric_name}/wrong_high_rate"] = reliability_stats["wrong_high_rate"]
         channel_metrics[f"pdpo/channel/{metric_name}/supports_correct_rate"] = reliability_stats["supports_correct_rate"]
+        channel_metrics[f"pdpo/channel/{metric_name}/pairwise_alignment_rate"] = reliability_stats["pairwise_alignment_rate"]
+        channel_metrics[f"pdpo/channel/{metric_name}/pairwise_inversion_rate"] = reliability_stats["pairwise_inversion_rate"]
+        channel_metrics[f"pdpo/channel/{metric_name}/pairwise_tie_rate"] = reliability_stats["pairwise_tie_rate"]
+        channel_metrics[f"pdpo/channel/{metric_name}/pairwise_total"] = reliability_stats["pairwise_total"]
+        channel_metrics[f"pdpo/channel/{metric_name}/pairwise_reliability"] = reliability_stats.get("pairwise_reliability", 1.0)
+        channel_metrics[f"pdpo/channel/{metric_name}/inversion_reliability"] = reliability_stats.get("inversion_reliability", 1.0)
         channel_metrics[f"pdpo/channel/{metric_name}/comparable_groups"] = reliability_stats["comparable_groups"]
         channel_metrics[f"pdpo/channel/{metric_name}/mean"] = float(aux_scores.mean().item())
 
@@ -711,14 +808,14 @@ def compute_pdpo_advantage(
             if len(idxs) > 1 and aux_scores[torch.tensor(idxs, device=aux_scores.device)].std().item() > cfg.min_aux_std
         )
 
-    main_active_mask = _active_group_mask(main_scores, id2indices, cfg.min_main_std)
-    beta = torch.where(
-        main_active_mask,
-        torch.full_like(main_adv, cfg.beta_tie),
-        torch.full_like(main_adv, cfg.beta_same),
-    )
     lambda_aux_effective = _effective_lambda_aux(state, cfg)
-    aux_component = lambda_aux_effective * beta * aux_adv_sum
+    aux_component = lambda_aux_effective * _lexicographic_aux_component(
+        aux_adv_sum,
+        main_scores,
+        id2indices,
+        cfg,
+        eps,
+    )
     combined_adv, safety_clamp_count, correctness_margin_min = _combine_correctness_safe(
         main_adv,
         aux_component,

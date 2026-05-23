@@ -5,7 +5,7 @@
 
 # Default values
 GPUS=""
-STEPS="500"
+STEPS="1000"
 REWARD_FILTER=""
 CLEANUP_RAY_VLLM=false
 SAVE_MODEL=false

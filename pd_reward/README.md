@@ -2,11 +2,11 @@
 
 This directory contains the reward functions, advantage estimators, launch scripts, and tests for the PDPO experiments on math and coding tasks.
 
-The current main method is **PDPO (Process-Distance Policy Optimization)**:
+The current main method is **PDPO-Core (Process-Distance Policy Optimization)**:
 
-> Keep the original task reward as the optimization target, and use process-distance subrewards only to estimate group-relative advantages when the original reward is too sparse or tied.
+> Keep the original task reward as the optimization target. Use process-distance subrewards only when the main reward cannot rank samples, or optionally inside equal-main-reward buckets.
 
-This is intentionally different from simply adding more reward terms. PDPO changes the **advantage estimation geometry**, not the semantic target of the task.
+This is intentionally different from simply adding more reward terms. PDPO changes the **advantage estimation geometry**, not the semantic target of the task. The current implementation is main-first and lexicographic: auxiliary rewards are surrogate signals, not objectives that trade off against correctness.
 
 ## Method Summary
 
@@ -15,7 +15,7 @@ This is intentionally different from simply adding more reward terms. PDPO chang
 | Vanilla GRPO | `-reward ori` | original reward only | `grpo` | baseline |
 | Static subreward mix | `-reward new` | scalarized main + aux | `grpo` | fixed reward shaping |
 | GDPO baseline | `-reward gdpo` | main and aux channels exported separately | `gdpo` | fixed-weight per-channel normalization baseline |
-| **PDPO** | `-reward pdpo` | original/main reward as anchor, aux exported separately | `pdpo` | correctness-safe, reliability-aware process advantage estimation |
+| **PDPO-Core** | `-reward pdpo` | original/main reward as anchor, aux exported separately | `pdpo` | main-first, reliability-aware process advantage estimation |
 
 `run_multiple_exp.sh` now defaults to the active matrix:
 
@@ -31,7 +31,7 @@ bash run_multiple_exp.sh -gpus 5 -reward pdpo
 
 ## Is PDPO Fundamental?
 
-Short answer: **yes, relative to GRPO/GDPO/reward mixing, PDPO is the more fundamental formulation for our setting**. The reason is that the real bottleneck is not only reward design; it is sparse-outcome **advantage identifiability**.
+Short answer: **yes, relative to GRPO/GDPO/reward mixing, PDPO is the more fundamental formulation for our setting**. The reason is that the real bottleneck is not only reward design; it is sparse-outcome **advantage identifiability under a fixed correctness objective**.
 
 ### What GRPO Fails To See
 
@@ -69,9 +69,9 @@ $$
 
 This avoids scale domination between channels. But fixed weights still do not know whether a group already has a reliable correctness ordering. If an auxiliary channel is anti-correlated in a group, GDPO can fight the final reward.
 
-### PDPO's Core Move
+### PDPO-Core's Core Move
 
-PDPO uses the original reward as the anchor and uses auxiliary process signals only in advantage space:
+PDPO-Core uses the original reward as the anchor and uses auxiliary process signals only in advantage space:
 
 $$
 A_i^{main} = \text{GroupNorm}(R_i^{main})
@@ -83,43 +83,76 @@ $$
 A_{i,k}^{aux} = \text{GroupNorm}(r_{i,k}^{aux})
 $$
 
-Then:
+Each auxiliary channel receives a reliability and dual-controlled scale:
 
 $$
-A_i^{PDPO}
-= A_i^{main}
-+ \lambda_{aux} \cdot \beta_G \sum_k w_k \rho_k m_{G,k} A_{i,k}^{aux}
+\tilde w_k = w_k \cdot \rho_k \cdot \exp(-\mu_k)
 $$
 
 where:
 
-- `m_{G,k}=1` only when auxiliary channel `k` has non-trivial group variance.
-- `rho_k` is a per-channel reliability scale from recent mixed-outcome groups.
-- `beta_G = beta_same` when the main reward is flat inside the group.
-- `beta_G = beta_tie` when the main reward already distinguishes samples.
-- Math PDPO gates non-answer auxiliary channels with `math_answer_extractability_reward` by default, so traces without an
-  extractable answer do not get full process-advantage credit.
-- Mixed-outcome groups use strict correctness safety: aux can rank samples within the same main-reward bucket, but cannot move a lower-main-reward sample above a higher-main-reward sample.
+- auxiliary channel `k` contributes only when it has non-trivial group variance.
+- `rho_k` is a per-channel reliability scale estimated from pairwise correct-vs-wrong alignment in mixed-outcome groups.
+- `mu_k` is a per-channel safety dual variable. It rises when a channel inverts correct-vs-wrong pairs or is high on wrong samples, and can recover when the channel is safe again.
+- Math PDPO gates non-answer auxiliary channels with `math_answer_extractability_reward` by default. That channel is treated as a gate/constraint, not a direct preference reward.
+
+The auxiliary component is lexicographic:
+
+$$
+C_i =
+\begin{cases}
+\beta_{same}\sum_k \tilde w_k A_{i,k}^{aux}, & \text{if the group has flat main reward} \\
+\beta_{tie}\sum_k \tilde w_k (A_{i,k}^{aux} - \bar A_{B,k}^{aux}), & \text{inside equal-main bucket } B \\
+0, & \text{across different main-reward buckets}
+\end{cases}
+$$
+
+Then:
+
+$$
+A_i^{PDPO} = A_i^{main} + \lambda_{aux}^{eff} C_i
+$$
+
+With the default `PDPO_BETA_TIE=0.0`, mixed-outcome groups use main reward only. Auxiliary channels are still used there to estimate reliability and dual pressure, but they do not change the advantage unless the user explicitly enables same-main-bucket tie-breaking.
 
 Default behavior:
 
 ```bash
 PDPO_BETA_SAME=0.70   # aux can guide all-wrong / tied groups, but less aggressively
-PDPO_BETA_TIE=0.20    # aux is only a weak tie-breaker when correctness varies
+PDPO_BETA_TIE=0.0     # mixed groups are main-only by default
 PDPO_LAMBDA_AUX=0.70
+PDPO_LAMBDA_AUX_START=0.30
+PDPO_LAMBDA_AUX_WARMUP_STEPS=100
 PDPO_MIN_AUX_STD=1e-6
 PDPO_MIN_MAIN_STD=1e-6
 PDPO_CORRECTNESS_SAFE=true
 PDPO_RELIABILITY_ENABLED=true
+PDPO_SAFETY_DUAL_ENABLED=true
 ```
 
-This makes PDPO more fundamental than plain reward shaping because it addresses the actual failure mode:
+This makes PDPO-Core more fundamental than plain reward shaping because it addresses the actual failure mode:
 
 > outcome reward defines what we want; process reward estimates which samples should get gradient when outcome reward cannot rank them.
 
+### What Primal-Dual Means Here
+
+PDPO currently has real internal dual variables, but it is not a full constrained RL saddle-point solver.
+
+Implemented dual controllers:
+
+- Per-channel safety dual `mu_k`: updated from signed constraint pressure based on correct-vs-wrong margin, pairwise inversion rate, and wrong-high rate. It scales channels by `exp(-mu_k)`.
+- Sharpness dual `lambda_s`: updated from group advantage std and used by the selective damping controller.
+
+Not implemented yet:
+
+- A global correctness dual that lowers `lambda_aux_eff` when rolling train/eval correctness drops below a target.
+- A formal convergence guarantee for the full policy optimization problem.
+
+So the current method is best described as **main-first PDPO with per-channel primal-dual safety control**, not full primal-dual RL.
+
 ### Limits
 
-PDPO is not a formal convergence guarantee. It now protects the main correctness ordering in mixed-outcome groups and downweights anti-aligned process channels, but it still depends on having at least some directionally useful process signals in flat all-wrong/all-correct groups.
+PDPO is not a formal convergence guarantee. It structurally prevents aux from crossing main correctness buckets and downweights anti-aligned process channels, but it still depends on having at least some directionally useful process signals in flat all-wrong/all-correct groups. If flat-group aux signals are not predictive of eventual correctness, PDPO-Core will correctly avoid corrupting mixed groups but may still fail to improve over `ori`.
 
 ## Implementation
 
@@ -136,7 +169,7 @@ For PDPO, the trainer ignores `aux_reward_combined` and reads the flattened per-
 
 ### Trainer Path
 
-[ray_trainer.py](/shared/nas2/yujiz/rl/verl/verl/trainer/ppo/ray_trainer.py) registers the local `pdpo` estimator. New runs should use only `pdpo`, `new`, or `ori`.
+[ray_trainer.py](/shared/nas2/yujiz/rl/verl/verl/trainer/ppo/ray_trainer.py) registers the local `pdpo` estimator. New reward sweeps should use the active matrix: `pdpo`, `gdpo`, `new`, and `ori`.
 
 For `pdpo`, it extracts numeric aux channels from `data.non_tensor_batch`:
 
@@ -150,10 +183,10 @@ For `pdpo`, it extracts numeric aux channels from `data.non_tensor_batch`:
 1. group-normalize main reward.
 2. group-normalize each auxiliary channel independently.
 3. skip auxiliary channels with no group variance.
-4. estimate per-channel reliability from mixed-outcome groups.
-5. update per-channel safety duals when aux channels are high on wrong samples or fail the correct-minus-wrong margin.
-6. preserve main-reward ordering in mixed-outcome groups with strict no-crossing.
-7. use auxiliary guidance freely only when main reward is flat, and only within same-main buckets otherwise.
+4. estimate per-channel reliability from pairwise correct-vs-wrong alignment in mixed-outcome groups.
+5. update per-channel safety duals when aux channels invert correct-vs-wrong pairs or fail the correct-minus-wrong margin.
+6. build a lexicographic aux component: flat-main groups may use aux freely; mixed groups may only use aux inside equal-main buckets.
+7. preserve main-reward ordering in mixed-outcome groups with strict no-crossing.
 8. apply the existing selective sharpness damping controller.
 
 Metrics emitted include:
@@ -181,6 +214,8 @@ Metrics emitted include:
 - per-channel `pdpo/channel/<name>/safety_dual_pressure`
 - per-channel `pdpo/channel/<name>/safety_dual_updated`
 - per-channel `pdpo/channel/<name>/wrong_high_rate`
+- per-channel `pdpo/channel/<name>/pairwise_alignment_rate`
+- per-channel `pdpo/channel/<name>/pairwise_inversion_rate`
 
 ## Usage
 
@@ -276,7 +311,7 @@ CODING_WEIGHT_BLOCK_LEVEL_PROCESS_REWARD=0.0
 | Env var | Hydra key | Default | Meaning |
 |---|---|---:|---|
 | `PDPO_BETA_SAME` | `reward_model.reward_kwargs.pdpo_beta_same` | `0.70` | Aux strength when main reward is flat in group |
-| `PDPO_BETA_TIE` | `reward_model.reward_kwargs.pdpo_beta_tie` | `0.20` | Aux strength when main reward already varies |
+| `PDPO_BETA_TIE` | `reward_model.reward_kwargs.pdpo_beta_tie` | `0.0` | Optional aux tie-break strength inside equal-main buckets of mixed groups |
 | `PDPO_LAMBDA_AUX` | `reward_model.reward_kwargs.pdpo_lambda_aux` | `0.70` | Global multiplier for aux advantages |
 | `PDPO_LAMBDA_AUX_START` | `reward_model.reward_kwargs.pdpo_lambda_aux_start` | `0.30` | Initial aux multiplier during warmup |
 | `PDPO_LAMBDA_AUX_WARMUP_STEPS` | `reward_model.reward_kwargs.pdpo_lambda_aux_warmup_steps` | `100` | Internal PDPO steps to ramp aux multiplier to `PDPO_LAMBDA_AUX` |
@@ -297,6 +332,8 @@ CODING_WEIGHT_BLOCK_LEVEL_PROCESS_REWARD=0.0
 | `PDPO_RELIABILITY_NEGATIVE_TOLERANCE` | `reward_model.reward_kwargs.pdpo_reliability_negative_tolerance` | `0.02` | Anti-correlation tolerance before strong downweighting |
 | `PDPO_RELIABILITY_WRONG_HIGH_THRESHOLD` | `reward_model.reward_kwargs.pdpo_reliability_wrong_high_threshold` | `0.30` | Aux score treated as high on wrong samples |
 | `PDPO_RELIABILITY_WRONG_HIGH_TARGET` | `reward_model.reward_kwargs.pdpo_reliability_wrong_high_target` | `0.20` | Wrong high-rate tolerated before downweighting |
+| `PDPO_RELIABILITY_PAIRWISE_TARGET` | `reward_model.reward_kwargs.pdpo_reliability_pairwise_target` | `0.55` | Pairwise alignment rate needed for full channel reliability |
+| `PDPO_RELIABILITY_INVERSION_TARGET` | `reward_model.reward_kwargs.pdpo_reliability_inversion_target` | `0.20` | Pairwise inversion rate tolerated before reliability penalty |
 | `PDPO_RELIABILITY_MIN_COMPARABLE_GROUPS` | `reward_model.reward_kwargs.pdpo_reliability_min_comparable_groups` | `4` | Minimum comparable prompt groups before updating reliability EMA |
 | `PDPO_RELIABILITY_WRONG_HIGH_SMOOTHING` | `reward_model.reward_kwargs.pdpo_reliability_wrong_high_smoothing` | `1.0` | Beta-style smoothing mass for wrong-high-rate estimates |
 | `PDPO_SAFETY_DUAL_ENABLED` | `reward_model.reward_kwargs.pdpo_safety_dual_enabled` | `true` | Enable PDPO-internal per-channel safety dual scaling |
@@ -305,6 +342,7 @@ CODING_WEIGHT_BLOCK_LEVEL_PROCESS_REWARD=0.0
 | `PDPO_SAFETY_DUAL_DECAY` | `reward_model.reward_kwargs.pdpo_safety_dual_decay` | `0.0` | Optional recovery decay for safety dual values |
 | `PDPO_SAFETY_DUAL_TARGET_MARGIN` | `reward_model.reward_kwargs.pdpo_safety_dual_target_margin` | `0.02` | Required correct-minus-wrong aux margin before no dual penalty |
 | `PDPO_SAFETY_DUAL_WRONG_HIGH_TARGET` | `reward_model.reward_kwargs.pdpo_safety_dual_wrong_high_target` | `0.20` | Wrong high-rate tolerated before safety dual penalty |
+| `PDPO_SAFETY_DUAL_INVERSION_TARGET` | `reward_model.reward_kwargs.pdpo_safety_dual_inversion_target` | `0.20` | Pairwise inversion rate tolerated before safety dual pressure |
 | `PDPO_SAFETY_DUAL_MIN_COMPARABLE_GROUPS` | `reward_model.reward_kwargs.pdpo_safety_dual_min_comparable_groups` | `4` | Minimum comparable prompt groups before primal-dual update |
 | `PDPO_SAFETY_DUAL_EMA_ALPHA` | `reward_model.reward_kwargs.pdpo_safety_dual_ema_alpha` | `0.10` | EMA rate for signed constraint pressure |
 | `PDPO_SAFETY_DUAL_RECOVERY_SCALE` | `reward_model.reward_kwargs.pdpo_safety_dual_recovery_scale` | `0.25` | Multiplier for negative pressure that recovers dual values |
@@ -316,8 +354,52 @@ CODING_WEIGHT_BLOCK_LEVEL_PROCESS_REWARD=0.0
 Example:
 
 ```bash
-PDPO_BETA_TIE=0.10 PDPO_BETA_SAME=0.70 \
+PDPO_BETA_TIE=0.0 PDPO_BETA_SAME=0.70 \
   bash train_math.sh -reward pdpo -dataset general365 -gpus 5
+```
+
+### Long-Eval PDPO Commands
+
+The current single-H100-80GB setup is already close to the memory limit with
+4k training responses, so increasing `MAX_RESPONSE_LENGTH` is risky. Prefer
+eval-only length increases unless there is spare memory or additional GPUs.
+
+Conservative single-card command, keeping training at 4k and only increasing
+validation to 10k:
+
+```bash
+cd /shared/nas2/yujiz/rl/verl/pd_reward && \
+EVAL_MAX_RESPONSE_LENGTH=10240 \
+EVAL_EVERY_STEPS=10 \
+VLLM_MAX_NUM_SEQS=32 \
+TRAIN_PROMPT_BSZ=4 \
+TRAIN_PROMPT_MINI_BSZ=4 \
+GEN_PROMPT_BSZ=16 \
+PPO_CLIP_RATIO=0.2 \
+PPO_CLIP_RATIO_LOW=0.2 \
+PPO_CLIP_RATIO_HIGH=0.3 \
+PDPO_ANSWER_GATE_PREFERENCE_SCALE=0.1 \
+bash run_multiple_exp.sh -gpus 6 -reward pdpo
+```
+
+OOM-risk command for a larger-memory setup or after further batch reduction.
+This raises the training response length to 6k and should not be used on the
+current single 80GB card without expecting failures:
+
+```bash
+cd /shared/nas2/yujiz/rl/verl/pd_reward && \
+MAX_RESPONSE_LENGTH=6144 \
+EVAL_MAX_RESPONSE_LENGTH=12288 \
+EVAL_EVERY_STEPS=10 \
+VLLM_MAX_NUM_SEQS=64 \
+TRAIN_PROMPT_BSZ=2 \
+TRAIN_PROMPT_MINI_BSZ=2 \
+GEN_PROMPT_BSZ=8 \
+PPO_CLIP_RATIO=0.2 \
+PPO_CLIP_RATIO_LOW=0.2 \
+PPO_CLIP_RATIO_HIGH=0.3 \
+PDPO_ANSWER_GATE_PREFERENCE_SCALE=0.1 \
+bash run_multiple_exp.sh -gpus 6 -reward pdpo
 ```
 
 ## Positioning
