@@ -358,47 +358,44 @@ PDPO_BETA_TIE=0.0 PDPO_BETA_SAME=0.70 \
   bash train_math.sh -reward pdpo -dataset general365 -gpus 5
 ```
 
-### Long-Eval PDPO Commands
+### Long-Context PDPO Defaults
 
-The current single-H100-80GB setup is already close to the memory limit with
-4k training responses, so increasing `MAX_RESPONSE_LENGTH` is risky. Prefer
-eval-only length increases unless there is spare memory or additional GPUs.
+The math launcher defaults to 6k training responses and 12k validation
+responses:
 
-Conservative single-card command, keeping training at 4k and only increasing
-validation to 10k:
+```bash
+MAX_RESPONSE_LENGTH=6144
+EVAL_MAX_RESPONSE_LENGTH=12288
+EVAL_EVERY_STEPS=10
+VLLM_MAX_NUM_SEQS=128
+TRAIN_PROMPT_BSZ=4
+TRAIN_PROMPT_MINI_BSZ=4
+GEN_PROMPT_BSZ=16
+PPO_CLIP_RATIO=0.2
+PPO_CLIP_RATIO_LOW=0.2
+PPO_CLIP_RATIO_HIGH=0.3
+PDPO_ANSWER_GATE_PREFERENCE_SCALE=0.1
+```
+
+Default PDPO launch:
+
+```bash
+cd /shared/nas2/yujiz/rl/verl/pd_reward
+bash run_multiple_exp.sh -gpus 6 -reward pdpo
+```
+
+Fallback command if the card is fragmented or another process leaves too little
+memory. This keeps training at 4k and only lengthens validation to 10k:
 
 ```bash
 cd /shared/nas2/yujiz/rl/verl/pd_reward && \
+MAX_RESPONSE_LENGTH=4096 \
 EVAL_MAX_RESPONSE_LENGTH=10240 \
 EVAL_EVERY_STEPS=10 \
 VLLM_MAX_NUM_SEQS=32 \
 TRAIN_PROMPT_BSZ=4 \
 TRAIN_PROMPT_MINI_BSZ=4 \
 GEN_PROMPT_BSZ=16 \
-PPO_CLIP_RATIO=0.2 \
-PPO_CLIP_RATIO_LOW=0.2 \
-PPO_CLIP_RATIO_HIGH=0.3 \
-PDPO_ANSWER_GATE_PREFERENCE_SCALE=0.1 \
-bash run_multiple_exp.sh -gpus 6 -reward pdpo
-```
-
-OOM-risk command for a larger-memory setup or after further batch reduction.
-This raises the training response length to 6k and should not be used on the
-current single 80GB card without expecting failures:
-
-```bash
-cd /shared/nas2/yujiz/rl/verl/pd_reward && \
-MAX_RESPONSE_LENGTH=6144 \
-EVAL_MAX_RESPONSE_LENGTH=12288 \
-EVAL_EVERY_STEPS=10 \
-VLLM_MAX_NUM_SEQS=64 \
-TRAIN_PROMPT_BSZ=2 \
-TRAIN_PROMPT_MINI_BSZ=2 \
-GEN_PROMPT_BSZ=8 \
-PPO_CLIP_RATIO=0.2 \
-PPO_CLIP_RATIO_LOW=0.2 \
-PPO_CLIP_RATIO_HIGH=0.3 \
-PDPO_ANSWER_GATE_PREFERENCE_SCALE=0.1 \
 bash run_multiple_exp.sh -gpus 6 -reward pdpo
 ```
 

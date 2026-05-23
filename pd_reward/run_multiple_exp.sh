@@ -229,14 +229,15 @@ while true; do
 
             cleanup_ray_vllm "before task"
 
-            # Align with coding high-performance config
-            export VLLM_GPU_UTIL=0.3
-            export VLLM_MAX_NUM_SEQS=128
-            export TRAIN_PROMPT_BSZ=4
-            export GEN_PROMPT_BSZ=16
-            export N_RESP_PER_PROMPT=4
-            export TRAIN_PROMPT_MINI_BSZ=4
-            export OFFLOAD=false
+            # Long-context math defaults. Keep each value overridable by the
+            # caller's environment.
+            export VLLM_GPU_UTIL="${VLLM_GPU_UTIL:-0.3}"
+            export VLLM_MAX_NUM_SEQS="${VLLM_MAX_NUM_SEQS:-128}"
+            export TRAIN_PROMPT_BSZ="${TRAIN_PROMPT_BSZ:-4}"
+            export GEN_PROMPT_BSZ="${GEN_PROMPT_BSZ:-16}"
+            export N_RESP_PER_PROMPT="${N_RESP_PER_PROMPT:-4}"
+            export TRAIN_PROMPT_MINI_BSZ="${TRAIN_PROMPT_MINI_BSZ:-4}"
+            export OFFLOAD="${OFFLOAD:-false}"
 
             TASK_OUT="${EXP_LOG_DIR}/R${ROUND}_math_${DATASET}_${REWARD}.stdout"
             TASK_ERR="${EXP_LOG_DIR}/R${ROUND}_math_${DATASET}_${REWARD}.stderr"
