@@ -28,9 +28,9 @@ class PDPOConfig:
     """Hyper-parameters for PDPO advantage estimation."""
 
     beta_tie: float = 0.0
-    beta_same: float = 0.70
-    lambda_aux: float = 0.70
-    lambda_aux_start: float = 0.30
+    beta_same: float = 0.25
+    lambda_aux: float = 0.25
+    lambda_aux_start: float = 0.05
     lambda_aux_warmup_steps: int = 0
     min_aux_std: float = 1e-6
     min_main_std: float = 1e-6
@@ -39,9 +39,17 @@ class PDPOConfig:
     answer_gate_closed_scale: float = 0.0
     answer_gate_as_constraint: bool = True
     answer_gate_preference_scale: float = 0.0
+    format_constraint_channels: str = "math_answer_extractability_reward,coding_code_extractability_reward"
+    efficiency_cost_channels: str = "math_trace_efficiency_reward"
+    efficiency_cost_weight_cap: float = 0.10
+    format_constraint_reliability_enabled: bool = False
+    format_constraint_safety_enabled: bool = False
 
     correctness_safe: bool = True
     correctness_margin: float = 1e-3
+
+    aux_budget: float = 0.5
+    aux_budget_normalize: bool = True
 
     reliability_enabled: bool = True
     reliability_ema_alpha: float = 0.05
@@ -57,7 +65,7 @@ class PDPOConfig:
     reliability_wrong_high_smoothing: float = 0.0
 
     safety_dual_enabled: bool = True
-    safety_dual_eta: float = 0.05
+    safety_dual_eta: float = 0.02
     safety_dual_mu_max: float = 6.0
     safety_dual_decay: float = 0.0
     safety_dual_target_margin: float = 0.02
@@ -66,6 +74,12 @@ class PDPOConfig:
     safety_dual_min_comparable_groups: int = 1
     safety_dual_ema_alpha: float = 0.10
     safety_dual_recovery_scale: float = 0.25
+
+    need_dual_enabled: bool = True
+    need_dual_eta: float = 0.02
+    need_dual_target: float = 0.75
+    need_dual_max: float = 2.0
+    need_dual_ema_alpha: float = 0.10
 
     eta_s: float = 0.01
     lambda_s_max: float = 2.0
@@ -106,6 +120,8 @@ class PDPOState:
     channel_reliability: dict[str, float] = field(default_factory=dict)
     channel_safety_dual: dict[str, float] = field(default_factory=dict)
     channel_safety_pressure_ema: dict[str, float] = field(default_factory=dict)
+    channel_need_dual: dict[str, float] = field(default_factory=dict)
+    channel_need_metric_ema: dict[str, float] = field(default_factory=dict)
 
 
 _PDPO_STATE: Optional[PDPOState] = None
@@ -195,6 +211,25 @@ def _coerce_config_value(value: Any, default_value: Any) -> Any:
 
 def _clamp(value: float, low: float, high: float) -> float:
     return max(low, min(value, high))
+
+
+def _parse_channel_set(value: Any) -> set[str]:
+    if value is None:
+        return set()
+    if isinstance(value, (list, tuple, set)):
+        return {str(item).strip() for item in value if str(item).strip()}
+    text = str(value).replace(";", ",")
+    return {item.strip() for item in text.split(",") if item.strip()}
+
+
+def _channel_role(name: str, cfg: PDPOConfig, gate_name: str) -> str:
+    format_channels = _parse_channel_set(cfg.format_constraint_channels)
+    efficiency_channels = _parse_channel_set(cfg.efficiency_cost_channels)
+    if name == gate_name or name in format_channels:
+        return "format_constraint"
+    if name in efficiency_channels:
+        return "efficiency_cost"
+    return "process_reward"
 
 
 def _channel_weight(name: str, config_dict: dict[str, Any]) -> float:
@@ -497,17 +532,19 @@ def _update_safety_dual(
     name: str,
     stats: dict[str, float],
     eps: float,
-) -> tuple[float, float, float, float, float, float]:
+) -> tuple[float, float, float, float, float, float, float]:
     if not cfg.safety_dual_enabled:
-        return 0.0, 1.0, 0.0, 0.0, 0.0, 0.0
+        return 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0
 
     old_mu = state.channel_safety_dual.get(name, 0.0)
     violation, pressure = _safety_dual_constraint_signal(stats, cfg, eps)
     old_pressure_ema = state.channel_safety_pressure_ema.get(name, 0.0)
     pressure_ema = old_pressure_ema
     mu = old_mu
+    decay_applied = 0.0
     min_groups = max(1, int(cfg.safety_dual_min_comparable_groups))
     should_update = stats["comparable_groups"] >= float(min_groups)
+    decay = _clamp(cfg.safety_dual_decay, 0.0, 1.0)
 
     if should_update:
         alpha = _clamp(cfg.safety_dual_ema_alpha, 0.0, 1.0)
@@ -517,8 +554,8 @@ def _update_safety_dual(
             pressure_ema = pressure
         state.channel_safety_pressure_ema[name] = pressure_ema
 
-        decay = _clamp(cfg.safety_dual_decay, 0.0, 1.0)
         mu = max(0.0, old_mu * (1.0 - decay))
+        decay_applied = float(decay > 0.0 and old_mu > 0.0)
         eta = max(0.0, cfg.safety_dual_eta)
         if pressure_ema >= 0.0:
             mu = mu + eta * pressure_ema
@@ -526,11 +563,48 @@ def _update_safety_dual(
             mu = mu + eta * max(0.0, cfg.safety_dual_recovery_scale) * pressure_ema
         mu = _clamp(mu, 0.0, max(0.0, cfg.safety_dual_mu_max))
         state.channel_safety_dual[name] = mu
+    elif decay > 0.0 and old_mu > 0.0:
+        mu = max(0.0, old_mu * (1.0 - decay))
+        state.channel_safety_dual[name] = mu
+        decay_applied = 1.0
     elif name not in state.channel_safety_dual:
         state.channel_safety_dual[name] = mu
         state.channel_safety_pressure_ema[name] = pressure_ema
 
-    return float(mu), float(math.exp(-mu)), float(violation), float(pressure), float(pressure_ema), float(should_update)
+    return (
+        float(mu),
+        float(math.exp(-mu)),
+        float(violation),
+        float(pressure),
+        float(pressure_ema),
+        float(should_update),
+        float(decay_applied),
+    )
+
+
+def _update_need_dual(
+    state: PDPOState,
+    cfg: PDPOConfig,
+    name: str,
+    metric: float,
+) -> tuple[float, float, float, float]:
+    if not cfg.need_dual_enabled:
+        return 0.0, float(metric), 0.0, 0.0
+
+    alpha = _clamp(cfg.need_dual_ema_alpha, 0.0, 1.0)
+    if name in state.channel_need_metric_ema:
+        old_ema = state.channel_need_metric_ema[name]
+        metric_ema = (1.0 - alpha) * old_ema + alpha * metric
+    else:
+        metric_ema = float(metric)
+    state.channel_need_metric_ema[name] = metric_ema
+
+    violation = float(cfg.need_dual_target) - metric_ema
+    old_lambda = state.channel_need_dual.get(name, 0.0)
+    dual = old_lambda + max(0.0, cfg.need_dual_eta) * violation
+    dual = _clamp(dual, 0.0, max(0.0, cfg.need_dual_max))
+    state.channel_need_dual[name] = dual
+    return float(dual), float(metric_ema), float(violation), 1.0
 
 
 def _combine_correctness_safe(
@@ -707,13 +781,15 @@ def compute_pdpo_advantage(
     active_channels = 0
     active_group_count = 0
     weight_sum = 0.0
+    weight_sum_pre_budget = 0.0
     channel_metrics: dict[str, float] = {}
+    channel_contributions: list[tuple[str, float, torch.Tensor, torch.Tensor]] = []
 
     for name in sorted(aux_sources):
         if name != "aux_tensor" and not _is_aux_channel(name):
             continue
-        base_weight = _channel_weight(name, config_dict)
-        if base_weight <= 0.0:
+        raw_weight = _channel_weight(name, config_dict)
+        if raw_weight <= 0.0:
             continue
 
         aux_scores = _to_scalar_tensor(
@@ -725,42 +801,90 @@ def compute_pdpo_advantage(
         if aux_scores is None:
             continue
 
+        role = _channel_role(name, cfg, gate_name)
+        is_format_constraint = role == "format_constraint"
+        base_weight = raw_weight
+        if role == "efficiency_cost":
+            base_weight = min(base_weight, max(0.0, cfg.efficiency_cost_weight_cap))
+
         if gate_scores is not None and name != gate_name:
             gate_mask = gate_scores >= cfg.answer_gate_min
             closed_scale = max(0.0, min(1.0, cfg.answer_gate_closed_scale))
             aux_scores = torch.where(gate_mask, aux_scores, aux_scores * closed_scale)
 
         reliability_stats = _channel_reliability_stats(aux_scores, main_scores, id2indices, cfg, eps)
-        reliability_weight, reliability, reliability_updated = _effective_channel_weight(
-            state,
-            cfg,
-            name,
-            base_weight,
-            reliability_stats,
-        )
-        (
-            safety_dual_mu,
-            safety_dual_scale,
-            safety_dual_violation,
-            safety_dual_pressure,
-            safety_dual_pressure_ema,
-            safety_dual_updated,
-        ) = _update_safety_dual(
-            state,
-            cfg,
-            name,
-            reliability_stats,
-            eps,
-        )
+        if is_format_constraint and not cfg.format_constraint_reliability_enabled:
+            reliability_weight = base_weight
+            reliability = 1.0
+            reliability_updated = 0.0
+            state.channel_reliability.setdefault(name, reliability)
+        else:
+            reliability_weight, reliability, reliability_updated = _effective_channel_weight(
+                state,
+                cfg,
+                name,
+                base_weight,
+                reliability_stats,
+            )
+
+        if is_format_constraint and not cfg.format_constraint_safety_enabled:
+            safety_dual_mu = 0.0
+            safety_dual_scale = 1.0
+            safety_dual_violation = 0.0
+            safety_dual_pressure = 0.0
+            safety_dual_pressure_ema = 0.0
+            safety_dual_updated = 0.0
+            safety_dual_decay_applied = 0.0
+            state.channel_safety_dual.setdefault(name, 0.0)
+            state.channel_safety_pressure_ema.setdefault(name, 0.0)
+        else:
+            (
+                safety_dual_mu,
+                safety_dual_scale,
+                safety_dual_violation,
+                safety_dual_pressure,
+                safety_dual_pressure_ema,
+                safety_dual_updated,
+                safety_dual_decay_applied,
+            ) = _update_safety_dual(
+                state,
+                cfg,
+                name,
+                reliability_stats,
+                eps,
+            )
         effective_weight = reliability_weight * safety_dual_scale
+        need_dual_lambda = 0.0
+        need_dual_metric_ema = float(aux_scores.mean().item())
+        need_dual_violation = 0.0
+        need_dual_updated = 0.0
+        if is_format_constraint:
+            (
+                need_dual_lambda,
+                need_dual_metric_ema,
+                need_dual_violation,
+                need_dual_updated,
+            ) = _update_need_dual(
+                state,
+                cfg,
+                name,
+                float(aux_scores.mean().item()),
+            )
         preference_weight = effective_weight
         if name == gate_name and cfg.answer_gate_as_constraint:
             preference_weight *= _clamp(cfg.answer_gate_preference_scale, 0.0, 1.0)
+        if is_format_constraint:
+            preference_weight *= 1.0 + need_dual_lambda
         metric_name = name.replace("/", "_")
+        channel_metrics[f"pdpo/channel/{metric_name}/role_format_constraint"] = float(role == "format_constraint")
+        channel_metrics[f"pdpo/channel/{metric_name}/role_process_reward"] = float(role == "process_reward")
+        channel_metrics[f"pdpo/channel/{metric_name}/role_efficiency_cost"] = float(role == "efficiency_cost")
+        channel_metrics[f"pdpo/channel/{metric_name}/raw_weight"] = float(raw_weight)
         channel_metrics[f"pdpo/channel/{metric_name}/weight"] = float(base_weight)
         channel_metrics[f"pdpo/channel/{metric_name}/reliability_weight"] = float(reliability_weight)
         channel_metrics[f"pdpo/channel/{metric_name}/effective_weight"] = float(effective_weight)
         channel_metrics[f"pdpo/channel/{metric_name}/preference_weight"] = float(preference_weight)
+        channel_metrics[f"pdpo/channel/{metric_name}/budgeted_preference_weight"] = 0.0
         channel_metrics[f"pdpo/channel/{metric_name}/reliability"] = float(reliability)
         channel_metrics[f"pdpo/channel/{metric_name}/reliability_updated"] = float(reliability_updated)
         channel_metrics[f"pdpo/channel/{metric_name}/safety_dual_mu"] = float(safety_dual_mu)
@@ -769,6 +893,11 @@ def compute_pdpo_advantage(
         channel_metrics[f"pdpo/channel/{metric_name}/safety_dual_pressure"] = float(safety_dual_pressure)
         channel_metrics[f"pdpo/channel/{metric_name}/safety_dual_pressure_ema"] = float(safety_dual_pressure_ema)
         channel_metrics[f"pdpo/channel/{metric_name}/safety_dual_updated"] = float(safety_dual_updated)
+        channel_metrics[f"pdpo/channel/{metric_name}/safety_dual_decay_applied"] = float(safety_dual_decay_applied)
+        channel_metrics[f"pdpo/channel/{metric_name}/need_dual_lambda"] = float(need_dual_lambda)
+        channel_metrics[f"pdpo/channel/{metric_name}/need_dual_metric_ema"] = float(need_dual_metric_ema)
+        channel_metrics[f"pdpo/channel/{metric_name}/need_dual_violation"] = float(need_dual_violation)
+        channel_metrics[f"pdpo/channel/{metric_name}/need_dual_updated"] = float(need_dual_updated)
         channel_metrics[f"pdpo/channel/{metric_name}/batch_reliability"] = reliability_stats["batch_reliability"]
         channel_metrics[f"pdpo/channel/{metric_name}/correct_mean"] = reliability_stats["correct_mean"]
         channel_metrics[f"pdpo/channel/{metric_name}/wrong_mean"] = reliability_stats["wrong_mean"]
@@ -798,15 +927,28 @@ def compute_pdpo_advantage(
             eps=eps,
         )
         aux_adv = torch.where(active_mask, aux_adv, torch.zeros_like(aux_adv))
-        aux_adv_sum = aux_adv_sum + preference_weight * aux_adv
-        aux_raw_sum = aux_raw_sum + preference_weight * aux_scores
+        channel_contributions.append((metric_name, float(preference_weight), aux_adv, aux_scores))
         active_channels += 1
-        weight_sum += preference_weight
+        weight_sum_pre_budget += float(preference_weight)
 
         active_group_count += sum(
             1 for idxs in id2indices.values()
             if len(idxs) > 1 and aux_scores[torch.tensor(idxs, device=aux_scores.device)].std().item() > cfg.min_aux_std
         )
+
+    aux_budget = max(0.0, float(cfg.aux_budget))
+    budget_scale = 1.0
+    if cfg.aux_budget_normalize and weight_sum_pre_budget > aux_budget >= 0.0:
+        budget_scale = 0.0 if weight_sum_pre_budget <= 0.0 else aux_budget / weight_sum_pre_budget
+
+    for metric_name, preference_weight, aux_adv, aux_scores in channel_contributions:
+        budgeted_weight = preference_weight * budget_scale
+        channel_metrics[f"pdpo/channel/{metric_name}/budgeted_preference_weight"] = float(budgeted_weight)
+        if budgeted_weight <= 0.0:
+            continue
+        aux_adv_sum = aux_adv_sum + budgeted_weight * aux_adv
+        aux_raw_sum = aux_raw_sum + budgeted_weight * aux_scores
+        weight_sum += budgeted_weight
 
     lambda_aux_effective = _effective_lambda_aux(state, cfg)
     aux_component = lambda_aux_effective * _lexicographic_aux_component(
@@ -853,6 +995,10 @@ def compute_pdpo_advantage(
         "pdpo/active_channels": float(active_channels),
         "pdpo/active_group_count": float(active_group_count),
         "pdpo/weight_sum": float(weight_sum),
+        "pdpo/weight_sum_pre_budget": float(weight_sum_pre_budget),
+        "pdpo/aux_budget": float(aux_budget),
+        "pdpo/budget_scale": float(budget_scale),
+        "pdpo/aux_budget_normalize": float(cfg.aux_budget_normalize),
         "pdpo/beta_tie": cfg.beta_tie,
         "pdpo/beta_same": cfg.beta_same,
         "pdpo/lambda_aux": cfg.lambda_aux,
@@ -864,6 +1010,10 @@ def compute_pdpo_advantage(
         "pdpo/correctness_margin_min": float(correctness_margin_min),
         "pdpo/reliability_enabled": float(cfg.reliability_enabled),
         "pdpo/safety_dual_enabled": float(cfg.safety_dual_enabled),
+        "pdpo/need_dual_enabled": float(cfg.need_dual_enabled),
+        "pdpo/need_dual_target": float(cfg.need_dual_target),
+        "pdpo/need_dual_max": float(cfg.need_dual_max),
+        "pdpo/efficiency_cost_weight_cap": float(cfg.efficiency_cost_weight_cap),
         "pdpo/answer_gate_as_constraint": float(cfg.answer_gate_as_constraint),
         "pdpo/answer_gate_preference_scale": float(cfg.answer_gate_preference_scale),
         "pdpo/step": float(state.step),

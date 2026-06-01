@@ -491,3 +491,214 @@ def test_lambda_aux_warmup_starts_from_configured_floor():
 
     assert torch.allclose(adv[:, -1], torch.zeros(4), atol=1e-6)
     assert pdpo_advantage.PDPO_METRICS["pdpo/lambda_aux_effective"] == pytest.approx(0.0)
+
+
+def test_default_pdpo_aux_is_budgeted_as_small_advantage_signal():
+    compute_pdpo_advantage = _load_pdpo()
+
+    compute_pdpo_advantage(
+        token_level_rewards=_make_token_rewards([0.0, 0.0, 0.0, 0.0]),
+        response_mask=torch.ones(4, 4),
+        index=np.array(["g1", "g1", "g1", "g1"]),
+        pdpo_aux_rewards_dict={
+            "math_answer_extractability_reward": [0.0, 1.0, 0.0, 1.0],
+            "math_step_arithmetic_validity_reward": [0.0, 1.0, 0.0, 1.0],
+        },
+        pdpo_config_dict={
+            "pdpo_eta_s": "0.0",
+            "pdpo_reliability_enabled": "false",
+            "pdpo_safety_dual_enabled": "false",
+            "pdpo_answer_gate_preference_scale": "1.0",
+            "pdpo_need_dual_enabled": "false",
+            "math_weight_answer_extractability_reward": "1.0",
+            "math_weight_step_arithmetic_validity_reward": "1.0",
+        },
+    )
+
+    import pdpo_advantage
+
+    metrics = pdpo_advantage.PDPO_METRICS
+    assert metrics["pdpo/beta_same"] == pytest.approx(0.25)
+    assert metrics["pdpo/lambda_aux"] == pytest.approx(0.25)
+    assert metrics["pdpo/lambda_aux_start"] == pytest.approx(0.05)
+    assert metrics["pdpo/aux_budget"] == pytest.approx(0.5)
+    assert metrics["pdpo/weight_sum_pre_budget"] == pytest.approx(2.0)
+    assert metrics["pdpo/budget_scale"] == pytest.approx(0.25)
+    assert metrics["pdpo/weight_sum"] == pytest.approx(0.5)
+
+
+def test_format_constraint_is_not_safety_suppressed_when_high_on_wrong_samples():
+    compute_pdpo_advantage = _load_pdpo()
+
+    compute_pdpo_advantage(
+        token_level_rewards=_make_token_rewards([0.0, 1.0, 0.0, 1.0]),
+        response_mask=torch.ones(4, 4),
+        index=np.array(["g1", "g1", "g1", "g1"]),
+        pdpo_aux_rewards_dict={
+            "math_answer_extractability_reward": [1.0, 0.0, 1.0, 0.0],
+        },
+        pdpo_config_dict={
+            "pdpo_eta_s": "0.0",
+            "pdpo_reliability_enabled": "true",
+            "pdpo_reliability_ema_alpha": "1.0",
+            "pdpo_safety_dual_enabled": "true",
+            "pdpo_safety_dual_eta": "1.0",
+            "pdpo_answer_gate_preference_scale": "1.0",
+            "pdpo_need_dual_enabled": "false",
+            "math_weight_answer_extractability_reward": "1.0",
+        },
+    )
+
+    import pdpo_advantage
+
+    prefix = "pdpo/channel/math_answer_extractability_reward"
+    metrics = pdpo_advantage.PDPO_METRICS
+    assert metrics[f"{prefix}/role_format_constraint"] == pytest.approx(1.0)
+    assert metrics[f"{prefix}/reliability"] == pytest.approx(1.0)
+    assert metrics[f"{prefix}/safety_dual_mu"] == pytest.approx(0.0)
+    assert metrics[f"{prefix}/preference_weight"] == pytest.approx(1.0)
+
+
+def test_need_dual_amplifies_unmet_format_constraint():
+    compute_pdpo_advantage = _load_pdpo()
+
+    compute_pdpo_advantage(
+        token_level_rewards=_make_token_rewards([0.0, 0.0, 0.0, 0.0]),
+        response_mask=torch.ones(4, 4),
+        index=np.array(["g1", "g1", "g1", "g1"]),
+        pdpo_aux_rewards_dict={
+            "math_answer_extractability_reward": [0.0, 0.0, 0.0, 1.0],
+        },
+        pdpo_config_dict={
+            "pdpo_beta_same": "1.0",
+            "pdpo_eta_s": "0.0",
+            "pdpo_reliability_enabled": "false",
+            "pdpo_safety_dual_enabled": "false",
+            "pdpo_answer_gate_preference_scale": "1.0",
+            "pdpo_need_dual_enabled": "true",
+            "pdpo_need_dual_eta": "1.0",
+            "pdpo_need_dual_target": "0.75",
+            "pdpo_need_dual_ema_alpha": "1.0",
+            "pdpo_need_dual_max": "2.0",
+            "pdpo_aux_budget": "10.0",
+            "math_weight_answer_extractability_reward": "1.0",
+        },
+    )
+
+    import pdpo_advantage
+
+    prefix = "pdpo/channel/math_answer_extractability_reward"
+    metrics = pdpo_advantage.PDPO_METRICS
+    assert metrics[f"{prefix}/need_dual_lambda"] == pytest.approx(0.5)
+    assert metrics[f"{prefix}/preference_weight"] == pytest.approx(1.5)
+    assert metrics[f"{prefix}/budgeted_preference_weight"] == pytest.approx(1.5)
+
+
+def test_aux_budget_normalizes_total_preference_weight():
+    compute_pdpo_advantage = _load_pdpo()
+
+    compute_pdpo_advantage(
+        token_level_rewards=_make_token_rewards([0.0, 0.0, 0.0, 0.0]),
+        response_mask=torch.ones(4, 4),
+        index=np.array(["g1", "g1", "g1", "g1"]),
+        pdpo_aux_rewards_dict={
+            "math_answer_extractability_reward": [0.0, 1.0, 0.0, 1.0],
+            "math_step_arithmetic_validity_reward": [0.0, 1.0, 0.0, 1.0],
+        },
+        pdpo_config_dict={
+            "pdpo_beta_same": "1.0",
+            "pdpo_eta_s": "0.0",
+            "pdpo_reliability_enabled": "false",
+            "pdpo_safety_dual_enabled": "false",
+            "pdpo_answer_gate_preference_scale": "1.0",
+            "pdpo_need_dual_enabled": "false",
+            "pdpo_aux_budget": "1.0",
+            "math_weight_answer_extractability_reward": "1.0",
+            "math_weight_step_arithmetic_validity_reward": "1.0",
+        },
+    )
+
+    import pdpo_advantage
+
+    metrics = pdpo_advantage.PDPO_METRICS
+    assert metrics["pdpo/weight_sum_pre_budget"] == pytest.approx(2.0)
+    assert metrics["pdpo/budget_scale"] == pytest.approx(0.5)
+    assert metrics["pdpo/weight_sum"] == pytest.approx(1.0)
+    assert metrics["pdpo/channel/math_answer_extractability_reward/budgeted_preference_weight"] == pytest.approx(0.5)
+    assert metrics["pdpo/channel/math_step_arithmetic_validity_reward/budgeted_preference_weight"] == pytest.approx(0.5)
+
+
+def test_safety_dual_decay_recovers_even_when_batch_is_below_update_threshold():
+    compute_pdpo_advantage = _load_pdpo()
+
+    common_config = {
+        "pdpo_eta_s": "0.0",
+        "pdpo_reliability_enabled": "false",
+        "pdpo_safety_dual_enabled": "true",
+        "pdpo_safety_dual_eta": "1.0",
+        "pdpo_safety_dual_decay": "0.25",
+        "pdpo_safety_dual_ema_alpha": "1.0",
+        "pdpo_safety_dual_min_comparable_groups": "2",
+        "math_weight_step_arithmetic_validity_reward": "1.0",
+    }
+
+    compute_pdpo_advantage(
+        token_level_rewards=_make_token_rewards([0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0]),
+        response_mask=torch.ones(8, 4),
+        index=np.array(["g1", "g1", "g1", "g1", "g2", "g2", "g2", "g2"]),
+        pdpo_aux_rewards_dict={
+            "math_step_arithmetic_validity_reward": [1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0],
+        },
+        pdpo_config_dict=common_config,
+    )
+
+    import pdpo_advantage
+
+    prefix = "pdpo/channel/math_step_arithmetic_validity_reward"
+    penalized_mu = pdpo_advantage.PDPO_METRICS[f"{prefix}/safety_dual_mu"]
+    assert penalized_mu > 0.0
+
+    compute_pdpo_advantage(
+        token_level_rewards=_make_token_rewards([0.0, 1.0, 0.0, 1.0]),
+        response_mask=torch.ones(4, 4),
+        index=np.array(["g1", "g1", "g1", "g1"]),
+        pdpo_aux_rewards_dict={
+            "math_step_arithmetic_validity_reward": [0.0, 1.0, 0.0, 1.0],
+        },
+        pdpo_config_dict=common_config,
+    )
+
+    metrics = pdpo_advantage.PDPO_METRICS
+    assert metrics[f"{prefix}/safety_dual_updated"] == pytest.approx(0.0)
+    assert metrics[f"{prefix}/safety_dual_decay_applied"] == pytest.approx(1.0)
+    assert metrics[f"{prefix}/safety_dual_mu"] == pytest.approx(penalized_mu * 0.75)
+
+
+def test_efficiency_cost_channel_weight_is_capped_before_budgeting():
+    compute_pdpo_advantage = _load_pdpo()
+
+    compute_pdpo_advantage(
+        token_level_rewards=_make_token_rewards([0.0, 0.0, 0.0, 0.0]),
+        response_mask=torch.ones(4, 4),
+        index=np.array(["g1", "g1", "g1", "g1"]),
+        pdpo_aux_rewards_dict={
+            "math_trace_efficiency_reward": [0.0, 1.0, 0.0, 1.0],
+        },
+        pdpo_config_dict={
+            "pdpo_beta_same": "1.0",
+            "pdpo_eta_s": "0.0",
+            "pdpo_reliability_enabled": "false",
+            "pdpo_safety_dual_enabled": "false",
+            "pdpo_efficiency_cost_weight_cap": "0.1",
+            "math_weight_trace_efficiency_reward": "1.0",
+        },
+    )
+
+    import pdpo_advantage
+
+    prefix = "pdpo/channel/math_trace_efficiency_reward"
+    metrics = pdpo_advantage.PDPO_METRICS
+    assert metrics[f"{prefix}/role_efficiency_cost"] == pytest.approx(1.0)
+    assert metrics[f"{prefix}/raw_weight"] == pytest.approx(1.0)
+    assert metrics[f"{prefix}/weight"] == pytest.approx(0.1)
+    assert metrics[f"{prefix}/budgeted_preference_weight"] == pytest.approx(0.1)

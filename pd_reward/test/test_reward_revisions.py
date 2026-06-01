@@ -198,19 +198,20 @@ def test_math_executable_preset_uses_revised_live_rewards_by_default():
     ) in script
     assert "MATH_WEIGHT_STEP_ARITHMETIC_VALIDITY_REWARD=${MATH_WEIGHT_STEP_ARITHMETIC_VALIDITY_REWARD:-0.35}" in script
     assert "MATH_WEIGHT_PREFIX_CONSISTENCY_REWARD=${MATH_WEIGHT_PREFIX_CONSISTENCY_REWARD:-0.15}" in script
-    assert "MATH_WEIGHT_TRACE_EFFICIENCY_REWARD=${MATH_WEIGHT_TRACE_EFFICIENCY_REWARD:-0.35}" in script
+    assert "MATH_WEIGHT_TRACE_EFFICIENCY_REWARD=${MATH_WEIGHT_TRACE_EFFICIENCY_REWARD:-0.10}" in script
     assert "MATH_WEIGHT_ANSWER_EXTRACTABILITY_REWARD=${MATH_WEIGHT_ANSWER_EXTRACTABILITY_REWARD:-0.15}" in script
     assert "PDPO_BETA_TIE=${PDPO_BETA_TIE:-0.0}" in script
-    assert "PDPO_BETA_SAME=${PDPO_BETA_SAME:-0.70}" in script
-    assert "PDPO_LAMBDA_AUX=${PDPO_LAMBDA_AUX:-0.70}" in script
-    assert "PDPO_LAMBDA_AUX_START=${PDPO_LAMBDA_AUX_START:-0.30}" in script
-    assert "PDPO_LAMBDA_AUX_WARMUP_STEPS=${PDPO_LAMBDA_AUX_WARMUP_STEPS:-100}" in script
+    assert "PDPO_BETA_SAME=${PDPO_BETA_SAME:-0.25}" in script
+    assert "PDPO_LAMBDA_AUX=${PDPO_LAMBDA_AUX:-0.25}" in script
+    assert "PDPO_LAMBDA_AUX_START=${PDPO_LAMBDA_AUX_START:-0.05}" in script
+    assert "PDPO_LAMBDA_AUX_WARMUP_STEPS=${PDPO_LAMBDA_AUX_WARMUP_STEPS:-300}" in script
     assert "PDPO_ANSWER_GATE_CHANNEL=${PDPO_ANSWER_GATE_CHANNEL:-math_answer_extractability_reward}" in script
     assert "PDPO_ANSWER_GATE_MIN=${PDPO_ANSWER_GATE_MIN:-0.5}" in script
     assert "pdpo_answer_gate_closed_scale" in script
     assert "PDPO_ANSWER_GATE_AS_CONSTRAINT=${PDPO_ANSWER_GATE_AS_CONSTRAINT:-true}" in script
     assert "pdpo_answer_gate_preference_scale" in script
     assert "PDPO_CORRECTNESS_SAFE=${PDPO_CORRECTNESS_SAFE:-true}" in script
+    assert "PDPO_AUX_BUDGET=${PDPO_AUX_BUDGET:-0.5}" in script
     assert "PDPO_RELIABILITY_ENABLED=${PDPO_RELIABILITY_ENABLED:-true}" in script
     assert "pdpo_reliability_wrong_high_threshold" in script
     assert "pdpo_reliability_pairwise_target" in script
@@ -224,6 +225,24 @@ def test_math_executable_preset_uses_revised_live_rewards_by_default():
     assert "pdpo_safety_dual_min_comparable_groups" in script
     assert "pdpo_safety_dual_ema_alpha" in script
     assert "pdpo_safety_dual_recovery_scale" in script
+
+
+def test_math_pdpo_channel_lists_are_quoted_for_hydra():
+    script = (PROJECT_DIR / "train_math.sh").read_text()
+
+    assert '++reward_model.reward_kwargs.pdpo_format_constraint_channels="\'${PDPO_FORMAT_CONSTRAINT_CHANNELS}\'"' in script
+    assert '++reward_model.reward_kwargs.pdpo_efficiency_cost_channels="\'${PDPO_EFFICIENCY_COST_CHANNELS}\'"' in script
+    assert '++reward_model.reward_kwargs.pdpo_format_constraint_channels="${PDPO_FORMAT_CONSTRAINT_CHANNELS}"' not in script
+    assert '++reward_model.reward_kwargs.pdpo_efficiency_cost_channels="${PDPO_EFFICIENCY_COST_CHANNELS}"' not in script
+
+
+def test_coding_pdpo_channel_lists_are_quoted_for_hydra():
+    script = (PROJECT_DIR / "train_code.sh").read_text()
+
+    assert '++reward_model.reward_kwargs.pdpo_format_constraint_channels="\'${PDPO_FORMAT_CONSTRAINT_CHANNELS}\'"' in script
+    assert '++reward_model.reward_kwargs.pdpo_efficiency_cost_channels="\'${PDPO_EFFICIENCY_COST_CHANNELS}\'"' in script
+    assert '++reward_model.reward_kwargs.pdpo_format_constraint_channels="${PDPO_FORMAT_CONSTRAINT_CHANNELS}"' not in script
+    assert '++reward_model.reward_kwargs.pdpo_efficiency_cost_channels="${PDPO_EFFICIENCY_COST_CHANNELS}"' not in script
 
 
 def test_math_reward_presets_only_include_active_matrix():
@@ -263,9 +282,16 @@ def test_coding_pdpo_script_defaults_to_general_aux_rewards():
     assert "pdpo_safety_dual_eta" in script
     assert "pdpo_safety_dual_wrong_high_target" in script
     assert "pdpo_safety_dual_inversion_target" in script
-    assert "PDPO_LAMBDA_AUX_WARMUP_STEPS=${PDPO_LAMBDA_AUX_WARMUP_STEPS:-100}" in script
+    assert "PDPO_LAMBDA_AUX_WARMUP_STEPS=${PDPO_LAMBDA_AUX_WARMUP_STEPS:-300}" in script
     assert "PDPO_ANSWER_GATE_CHANNEL=${PDPO_ANSWER_GATE_CHANNEL:-coding_code_extractability_reward}" in script
     assert "PDPO_ANSWER_GATE_AS_CONSTRAINT=${PDPO_ANSWER_GATE_AS_CONSTRAINT:-true}" in script
+    assert "PDPO_BETA_SAME=${PDPO_BETA_SAME:-0.25}" in script
+    assert "PDPO_LAMBDA_AUX=${PDPO_LAMBDA_AUX:-0.25}" in script
+    assert "PDPO_LAMBDA_AUX_START=${PDPO_LAMBDA_AUX_START:-0.05}" in script
+    assert "PDPO_AUX_BUDGET=${PDPO_AUX_BUDGET:-0.5}" in script
+    assert "pdpo_aux_budget" in script
+    assert "pdpo_format_constraint_channels" in script
+    assert "pdpo_need_dual_eta" in script
     assert "pdpo_reliability_pairwise_target" in script
     assert "pdpo_reliability_min_comparable_groups" in script
     assert "pdpo_safety_dual_recovery_scale" in script
@@ -421,6 +447,54 @@ def test_gdpo_modes_are_available_with_reward_components():
 
     assert 'gdpo|gdpo_reward)' in multi_script
     assert 'REWARDS=("gdpo")' in multi_script
+
+
+def test_gdpo_math_defaults_keep_metric_channels_out_of_advantage():
+    script = (PROJECT_DIR / "train_math.sh").read_text()
+    gdpo_block = script[script.index("GDPO_ARGS=()") : script.index('case "${KL_MODE}"')]
+
+    assert "GDPO_MAIN_WEIGHT=${GDPO_MAIN_WEIGHT:-1.0}" in gdpo_block
+    assert "GDPO_WEIGHT_MATH_STEP_ARITHMETIC_VALIDITY_REWARD=${GDPO_WEIGHT_MATH_STEP_ARITHMETIC_VALIDITY_REWARD:-0.05}" in script
+    assert "GDPO_WEIGHT_MATH_PREFIX_CONSISTENCY_REWARD=${GDPO_WEIGHT_MATH_PREFIX_CONSISTENCY_REWARD:-0.02}" in script
+    assert "GDPO_ENABLE_MATH_TRACE_EFFICIENCY_REWARD=${GDPO_ENABLE_MATH_TRACE_EFFICIENCY_REWARD:-false}" in script
+    assert "GDPO_WEIGHT_MATH_TRACE_EFFICIENCY_REWARD=${GDPO_WEIGHT_MATH_TRACE_EFFICIENCY_REWARD:-0.0}" in script
+    assert "GDPO_ENABLE_MATH_ANSWER_EXTRACTABILITY_REWARD=${GDPO_ENABLE_MATH_ANSWER_EXTRACTABILITY_REWARD:-false}" in script
+    assert "GDPO_WEIGHT_MATH_ANSWER_EXTRACTABILITY_REWARD=${GDPO_WEIGHT_MATH_ANSWER_EXTRACTABILITY_REWARD:-0.0}" in script
+    assert (
+        'if is_truthy "${MATH_ENABLE_TRACE_EFFICIENCY_REWARD}" && '
+        'is_truthy "${GDPO_ENABLE_MATH_TRACE_EFFICIENCY_REWARD}"; then'
+    ) in gdpo_block
+    assert (
+        'if is_truthy "${MATH_ENABLE_ANSWER_EXTRACTABILITY_REWARD}" && '
+        'is_truthy "${GDPO_ENABLE_MATH_ANSWER_EXTRACTABILITY_REWARD}"; then'
+    ) in gdpo_block
+    assert 'gdpo_weights+=("${MATH_WEIGHT_TRACE_EFFICIENCY_REWARD}")' not in gdpo_block
+    assert 'gdpo_weights+=("${MATH_WEIGHT_ANSWER_EXTRACTABILITY_REWARD}")' not in gdpo_block
+
+
+def test_gdpo_code_defaults_keep_extractability_out_of_advantage():
+    script = (PROJECT_DIR / "train_code.sh").read_text()
+    gdpo_block = script[script.index("GDPO_ARGS=()") : script.index('case "${KL_MODE}"')]
+
+    assert "GDPO_MAIN_WEIGHT=${GDPO_MAIN_WEIGHT:-1.0}" in gdpo_block
+    assert (
+        "GDPO_ENABLE_CODING_CODE_EXTRACTABILITY_REWARD="
+        "${GDPO_ENABLE_CODING_CODE_EXTRACTABILITY_REWARD:-false}"
+    ) in script
+    assert (
+        "GDPO_WEIGHT_CODING_CODE_EXTRACTABILITY_REWARD="
+        "${GDPO_WEIGHT_CODING_CODE_EXTRACTABILITY_REWARD:-0.0}"
+    ) in script
+    assert "GDPO_WEIGHT_CODING_SYNTAX_VALIDITY_REWARD=${GDPO_WEIGHT_CODING_SYNTAX_VALIDITY_REWARD:-0.05}" in script
+    assert (
+        "GDPO_WEIGHT_CODING_COMPILER_RUNTIME_FEEDBACK="
+        "${GDPO_WEIGHT_CODING_COMPILER_RUNTIME_FEEDBACK:-0.05}"
+    ) in script
+    assert (
+        'if is_truthy "${CODING_ENABLE_CODE_EXTRACTABILITY_REWARD}" && '
+        'is_truthy "${GDPO_ENABLE_CODING_CODE_EXTRACTABILITY_REWARD}"; then'
+    ) in gdpo_block
+    assert 'gdpo_weights+=("${CODING_WEIGHT_CODE_EXTRACTABILITY_REWARD}")' not in gdpo_block
 
 
 def test_multi_experiment_runner_uses_renamed_train_scripts():

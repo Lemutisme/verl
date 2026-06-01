@@ -3,8 +3,8 @@ import json
 import os
 import sys
 from collections import Counter
-from pathlib import Path
 from collections.abc import Iterable
+from pathlib import Path
 from typing import Any
 
 import pyarrow as pa
@@ -29,6 +29,41 @@ CODING_SOURCES = {
     "codeforces",
     "taco",
 }
+EURUS_PARQUET_SCHEMA = pa.schema(
+    [
+        pa.field("data_source", pa.string()),
+        pa.field(
+            "prompt",
+            pa.list_(
+                pa.struct(
+                    [
+                        pa.field("role", pa.string()),
+                        pa.field("content", pa.large_string()),
+                    ]
+                )
+            ),
+        ),
+        pa.field("ability", pa.string()),
+        pa.field(
+            "reward_model",
+            pa.struct(
+                [
+                    pa.field("style", pa.string()),
+                    pa.field("ground_truth", pa.large_string()),
+                ]
+            ),
+        ),
+        pa.field(
+            "extra_info",
+            pa.struct(
+                [
+                    pa.field("index", pa.int64()),
+                    pa.field("split", pa.string()),
+                ]
+            ),
+        ),
+    ]
+)
 
 
 def _source_key(data_source: Any) -> str:
@@ -64,11 +99,84 @@ def _normalized_reward_model(reward_model: Any) -> dict[str, Any] | None:
         payload["assert_case"] = assert_cases
 
     normalized = dict(reward_model)
-    normalized["ground_truth"] = json.dumps(payload, ensure_ascii=False)
-    return normalized
+    normalized["style"] = str(normalized.get("style") or "rule")
+    normalized["ground_truth"] = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    return {
+        "style": normalized["style"],
+        "ground_truth": normalized["ground_truth"],
+    }
 
 
-def prepare_eurus_rows(rows: Iterable[dict[str, Any]]) -> tuple[list[dict[str, Any]], Counter[str]]:
+def _text_or_json(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    if isinstance(value, (dict, list, tuple)):
+        return json.dumps(value, ensure_ascii=False)
+    return str(value)
+
+
+def _normalized_prompt(prompt: Any) -> list[dict[str, str]] | None:
+    messages: list[dict[str, str]] = []
+    if isinstance(prompt, list):
+        for item in prompt:
+            if isinstance(item, dict):
+                role = _text_or_json(item.get("role")).strip() or "user"
+                content = _text_or_json(item.get("content"))
+            else:
+                role = "user"
+                content = _text_or_json(item)
+            if content.strip():
+                messages.append({"role": role, "content": content})
+    else:
+        content = _text_or_json(prompt)
+        if content.strip():
+            messages.append({"role": "user", "content": content})
+
+    return messages or None
+
+
+def _coerce_index(value: Any, fallback: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return fallback
+
+
+def _canonical_eurus_row(
+    row: dict[str, Any], *, output_index: int, split: str | None
+) -> tuple[dict[str, Any] | None, str | None]:
+    reward_model = _normalized_reward_model(row.get("reward_model"))
+    if reward_model is None:
+        return None, "invalid_tests"
+
+    prompt = _normalized_prompt(row.get("prompt"))
+    if prompt is None:
+        return None, "invalid_prompt"
+
+    extra_info = row.get("extra_info") if isinstance(row.get("extra_info"), dict) else {}
+    index = _coerce_index(extra_info.get("index", row.get("index")), output_index)
+    split_value = _text_or_json(extra_info.get("split", row.get("split", split))).strip()
+
+    return (
+        {
+            "data_source": _text_or_json(row.get("data_source") or "eurus").strip() or "eurus",
+            "prompt": prompt,
+            "ability": _text_or_json(row.get("ability") or "code").strip() or "code",
+            "reward_model": reward_model,
+            "extra_info": {
+                "index": index,
+                "split": split_value,
+            },
+        },
+        None,
+    )
+
+
+def prepare_eurus_rows(rows: Iterable[dict[str, Any]], split: str | None = None) -> tuple[list[dict[str, Any]], Counter[str]]:
     cleaned = []
     dropped = Counter()
     for row in rows:
@@ -76,23 +184,32 @@ def prepare_eurus_rows(rows: Iterable[dict[str, Any]]) -> tuple[list[dict[str, A
             dropped["non_coding"] += 1
             continue
 
-        reward_model = _normalized_reward_model(row.get("reward_model"))
-        if reward_model is None:
-            dropped["invalid_tests"] += 1
+        normalized_row, drop_reason = _canonical_eurus_row(row, output_index=len(cleaned), split=split)
+        if normalized_row is None:
+            dropped[drop_reason or "invalid_row"] += 1
             continue
 
-        normalized_row = dict(row)
-        normalized_row["reward_model"] = reward_model
         cleaned.append(normalized_row)
     return cleaned, dropped
 
 
-def _write_parquet_rows(rows: list[dict[str, Any]], path: Path) -> None:
+def _write_parquet_rows(rows: list[dict[str, Any]], path: Path, row_group_size: int = 256) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     if not rows:
         raise ValueError(f"No rows to write for {path}")
-    table = pa.Table.from_pylist(rows)
-    pq.write_table(table, path)
+    if row_group_size <= 0:
+        raise ValueError(f"row_group_size must be positive, got {row_group_size}")
+
+    writer = None
+    try:
+        for start in range(0, len(rows), row_group_size):
+            table = pa.Table.from_pylist(rows[start : start + row_group_size], schema=EURUS_PARQUET_SCHEMA)
+            if writer is None:
+                writer = pq.ParquetWriter(path, table.schema)
+            writer.write_table(table)
+    finally:
+        if writer is not None:
+            writer.close()
 
 
 def _load_split(dataset_name: str, split: str, local_dataset_path: str | None = None):
@@ -115,7 +232,7 @@ def _prepare_split(
 ) -> None:
     rows = _load_split(dataset_name, split, local_dataset_path=local_dataset_path)
     input_rows = len(rows)
-    cleaned, dropped = prepare_eurus_rows(rows)
+    cleaned, dropped = prepare_eurus_rows(rows, split=split)
     _write_parquet_rows(cleaned, output_path)
     print(f"split={split}")
     print(f"input_rows={input_rows}")
