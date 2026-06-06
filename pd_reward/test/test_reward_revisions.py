@@ -200,18 +200,39 @@ def test_math_executable_preset_uses_revised_live_rewards_by_default():
     assert "MATH_WEIGHT_PREFIX_CONSISTENCY_REWARD=${MATH_WEIGHT_PREFIX_CONSISTENCY_REWARD:-0.15}" in script
     assert "MATH_WEIGHT_TRACE_EFFICIENCY_REWARD=${MATH_WEIGHT_TRACE_EFFICIENCY_REWARD:-0.10}" in script
     assert "MATH_WEIGHT_ANSWER_EXTRACTABILITY_REWARD=${MATH_WEIGHT_ANSWER_EXTRACTABILITY_REWARD:-0.15}" in script
-    assert "PDPO_BETA_TIE=${PDPO_BETA_TIE:-0.0}" in script
-    assert "PDPO_BETA_SAME=${PDPO_BETA_SAME:-0.25}" in script
-    assert "PDPO_LAMBDA_AUX=${PDPO_LAMBDA_AUX:-0.25}" in script
-    assert "PDPO_LAMBDA_AUX_START=${PDPO_LAMBDA_AUX_START:-0.05}" in script
-    assert "PDPO_LAMBDA_AUX_WARMUP_STEPS=${PDPO_LAMBDA_AUX_WARMUP_STEPS:-300}" in script
+    assert "PDPO_BETA_TIE=${PDPO_BETA_TIE:-0.05}" in script
+    assert "PDPO_BETA_SAME=${PDPO_BETA_SAME:-0.0}" in script
+    assert "PDPO_BETA_SAME_WRONG=${PDPO_BETA_SAME_WRONG:-0.0}" in script
+    assert "PDPO_BETA_SAME_CORRECT=${PDPO_BETA_SAME_CORRECT:-0.0}" in script
+    assert "PDPO_CORRECT_SCORE_THRESHOLD=${PDPO_CORRECT_SCORE_THRESHOLD:-0.999}" in script
+    assert "PDPO_LAMBDA_AUX=${PDPO_LAMBDA_AUX:-0.12}" in script
+    assert "PDPO_LAMBDA_AUX_START=${PDPO_LAMBDA_AUX_START:-0.04}" in script
+    assert "PDPO_LAMBDA_AUX_WARMUP_STEPS=${PDPO_LAMBDA_AUX_WARMUP_STEPS:-80}" in script
+    assert "PDPO_LAMBDA_AUX_DECAY_START_STEPS=${PDPO_LAMBDA_AUX_DECAY_START_STEPS:-120}" in script
+    assert "PDPO_LAMBDA_AUX_DECAY_STEPS=${PDPO_LAMBDA_AUX_DECAY_STEPS:-180}" in script
+    assert "PDPO_LAMBDA_AUX_FLOOR=${PDPO_LAMBDA_AUX_FLOOR:-0.02}" in script
+    assert "PDPO_AUX_REQUIRE_MAIN_VARIANCE=${PDPO_AUX_REQUIRE_MAIN_VARIANCE:-true}" in script
+    assert "pdpo_lambda_aux_decay_start_steps" in script
+    assert "pdpo_lambda_aux_floor" in script
+    assert "pdpo_aux_require_main_variance" in script
     assert "PDPO_ANSWER_GATE_CHANNEL=${PDPO_ANSWER_GATE_CHANNEL:-math_answer_extractability_reward}" in script
     assert "PDPO_ANSWER_GATE_MIN=${PDPO_ANSWER_GATE_MIN:-0.5}" in script
     assert "pdpo_answer_gate_closed_scale" in script
     assert "PDPO_ANSWER_GATE_AS_CONSTRAINT=${PDPO_ANSWER_GATE_AS_CONSTRAINT:-true}" in script
     assert "pdpo_answer_gate_preference_scale" in script
     assert "PDPO_CORRECTNESS_SAFE=${PDPO_CORRECTNESS_SAFE:-true}" in script
-    assert "PDPO_AUX_BUDGET=${PDPO_AUX_BUDGET:-0.5}" in script
+    assert "PDPO_AUX_BUDGET=${PDPO_AUX_BUDGET:-0.15}" in script
+    assert "PDPO_RESPONSE_LENGTH_GATE_ENABLED=${PDPO_RESPONSE_LENGTH_GATE_ENABLED:-true}" in script
+    assert "PDPO_RESPONSE_LENGTH_GATE_THRESHOLD=${PDPO_RESPONSE_LENGTH_GATE_THRESHOLD:-0.98}" in script
+    assert "PDPO_RESPONSE_LENGTH_GATE_CLOSED_SCALE=${PDPO_RESPONSE_LENGTH_GATE_CLOSED_SCALE:-0.0}" in script
+    assert "pdpo_response_length_gate_enabled" in script
+    assert "pdpo_response_length_gate_threshold" in script
+    assert "pdpo_response_length_gate_closed_scale" in script
+    assert "PDPO_DRIFT_GUARD_ENABLED=${PDPO_DRIFT_GUARD_ENABLED:-true}" in script
+    assert "PDPO_DRIFT_GUARD_EMA_ALPHA=${PDPO_DRIFT_GUARD_EMA_ALPHA:-0.05}" in script
+    assert "PDPO_DRIFT_GUARD_TOLERANCE=${PDPO_DRIFT_GUARD_TOLERANCE:-0.05}" in script
+    assert "PDPO_DRIFT_GUARD_TARGET_DROP=${PDPO_DRIFT_GUARD_TARGET_DROP:-0.20}" in script
+    assert "pdpo_drift_guard_target_drop" in script
     assert "PDPO_RELIABILITY_ENABLED=${PDPO_RELIABILITY_ENABLED:-true}" in script
     assert "pdpo_reliability_wrong_high_threshold" in script
     assert "pdpo_reliability_pairwise_target" in script
@@ -225,6 +246,9 @@ def test_math_executable_preset_uses_revised_live_rewards_by_default():
     assert "pdpo_safety_dual_min_comparable_groups" in script
     assert "pdpo_safety_dual_ema_alpha" in script
     assert "pdpo_safety_dual_recovery_scale" in script
+    assert "PDPO_NEED_DUAL_ENABLED=${PDPO_NEED_DUAL_ENABLED:-false}" in script
+    assert "MAX_RESPONSE_LENGTH=${MAX_RESPONSE_LENGTH:-4096}" in script
+    assert "EVAL_MAX_RESPONSE_LENGTH=${EVAL_MAX_RESPONSE_LENGTH:-6144}" in script
 
 
 def test_math_pdpo_channel_lists_are_quoted_for_hydra():
@@ -282,19 +306,36 @@ def test_coding_pdpo_script_defaults_to_general_aux_rewards():
     assert "pdpo_safety_dual_eta" in script
     assert "pdpo_safety_dual_wrong_high_target" in script
     assert "pdpo_safety_dual_inversion_target" in script
-    assert "PDPO_LAMBDA_AUX_WARMUP_STEPS=${PDPO_LAMBDA_AUX_WARMUP_STEPS:-300}" in script
+    assert "PDPO_LAMBDA_AUX_WARMUP_STEPS=${PDPO_LAMBDA_AUX_WARMUP_STEPS:-80}" in script
+    assert "PDPO_LAMBDA_AUX_DECAY_START_STEPS=${PDPO_LAMBDA_AUX_DECAY_START_STEPS:-120}" in script
+    assert "PDPO_LAMBDA_AUX_DECAY_STEPS=${PDPO_LAMBDA_AUX_DECAY_STEPS:-180}" in script
+    assert "PDPO_LAMBDA_AUX_FLOOR=${PDPO_LAMBDA_AUX_FLOOR:-0.02}" in script
+    assert "PDPO_AUX_REQUIRE_MAIN_VARIANCE=${PDPO_AUX_REQUIRE_MAIN_VARIANCE:-true}" in script
     assert "PDPO_ANSWER_GATE_CHANNEL=${PDPO_ANSWER_GATE_CHANNEL:-coding_code_extractability_reward}" in script
     assert "PDPO_ANSWER_GATE_AS_CONSTRAINT=${PDPO_ANSWER_GATE_AS_CONSTRAINT:-true}" in script
-    assert "PDPO_BETA_SAME=${PDPO_BETA_SAME:-0.25}" in script
-    assert "PDPO_LAMBDA_AUX=${PDPO_LAMBDA_AUX:-0.25}" in script
-    assert "PDPO_LAMBDA_AUX_START=${PDPO_LAMBDA_AUX_START:-0.05}" in script
-    assert "PDPO_AUX_BUDGET=${PDPO_AUX_BUDGET:-0.5}" in script
+    assert "PDPO_BETA_TIE=${PDPO_BETA_TIE:-0.05}" in script
+    assert "PDPO_BETA_SAME=${PDPO_BETA_SAME:-0.0}" in script
+    assert "PDPO_BETA_SAME_WRONG=${PDPO_BETA_SAME_WRONG:-0.0}" in script
+    assert "PDPO_BETA_SAME_CORRECT=${PDPO_BETA_SAME_CORRECT:-0.0}" in script
+    assert "PDPO_CORRECT_SCORE_THRESHOLD=${PDPO_CORRECT_SCORE_THRESHOLD:-0.999}" in script
+    assert "PDPO_LAMBDA_AUX=${PDPO_LAMBDA_AUX:-0.12}" in script
+    assert "PDPO_LAMBDA_AUX_START=${PDPO_LAMBDA_AUX_START:-0.04}" in script
+    assert "PDPO_AUX_BUDGET=${PDPO_AUX_BUDGET:-0.15}" in script
     assert "pdpo_aux_budget" in script
+    assert "PDPO_RESPONSE_LENGTH_GATE_ENABLED=${PDPO_RESPONSE_LENGTH_GATE_ENABLED:-true}" in script
+    assert "PDPO_RESPONSE_LENGTH_GATE_THRESHOLD=${PDPO_RESPONSE_LENGTH_GATE_THRESHOLD:-0.98}" in script
+    assert "PDPO_RESPONSE_LENGTH_GATE_CLOSED_SCALE=${PDPO_RESPONSE_LENGTH_GATE_CLOSED_SCALE:-0.0}" in script
+    assert "pdpo_response_length_gate_enabled" in script
+    assert "pdpo_response_length_gate_threshold" in script
+    assert "pdpo_response_length_gate_closed_scale" in script
+    assert "PDPO_DRIFT_GUARD_ENABLED=${PDPO_DRIFT_GUARD_ENABLED:-true}" in script
+    assert "pdpo_drift_guard_enabled" in script
     assert "pdpo_format_constraint_channels" in script
     assert "pdpo_need_dual_eta" in script
     assert "pdpo_reliability_pairwise_target" in script
     assert "pdpo_reliability_min_comparable_groups" in script
     assert "pdpo_safety_dual_recovery_scale" in script
+    assert "PDPO_NEED_DUAL_ENABLED=${PDPO_NEED_DUAL_ENABLED:-false}" in script
 
 
 def test_coding_script_prefers_eurus_train_and_eval_data():
@@ -304,7 +345,7 @@ def test_coding_script_prefers_eurus_train_and_eval_data():
     assert "eurus_code_val.parquet" in script
     assert "EURUS_TRAIN_FILE" in script
     assert "EURUS_VAL_FILE" in script
-    assert 'PROJECT_NAME=${PROJECT_NAME:-"eurus_grpo"}' in script
+    assert 'PROJECT_NAME=${PROJECT_NAME:-"eurus_${METHOD_LABEL}"}' in script
 
 
 def test_eurus_coding_sources_route_to_executable_reward(monkeypatch):

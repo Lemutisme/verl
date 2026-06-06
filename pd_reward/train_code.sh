@@ -4,9 +4,10 @@ set -euo pipefail
 usage() {
   cat <<'EOF'
 Usage:
-  bash train_code.sh -reward {ori|new|pdpo|gdpo} -model {qwen3-4b|qwen3-8b|deepseek7b|custom} [options]
+  bash train_code.sh -method {grpo|dapo} -reward {ori|new|pdpo|gdpo} -model {qwen3-4b|qwen3-8b|deepseek7b|custom} [options]
 
 Options:
+  -method, --method         Optimization method: grpo or dapo (default: grpo)
   -reward, --reward         Reward preset: ori, new, pdpo, gdpo
   -model, --model           Model preset: qwen3-4b, qwen3-8b, deepseek-r1-1.5b, deepseek7b, custom
   -mode, --mode             Alias of -model
@@ -29,7 +30,7 @@ Coding sub-reward env knobs:
   -h, --help                Show this help message
 
 Examples:
-  bash train_code.sh -reward ori -model qwen3-4b
+  bash train_code.sh -method grpo -reward ori -model qwen3-4b
   bash train_code.sh -reward new -model qwen3-8b -kl none -gpus 2,3 -name ablation_a
   bash train_code.sh -reward pdpo -model deepseek7b -kl reward -kl-coef 0.001
   bash train_code.sh -reward gdpo -model custom -model-id Qwen/Qwen3-30B-A3B-Instruct-2507
@@ -62,6 +63,7 @@ sanitize_token() {
     | sed -E 's#[^a-z0-9._-]+#-#g; s#-+#-#g; s#(^-|-$)##g'
 }
 
+METHOD_KIND=${METHOD_KIND:-${METHOD:-"grpo"}}
 REWARD_KIND=${REWARD_KIND:-"pdpo"}
 MODEL_PRESET=${MODEL_PRESET:-${MODEL_MODE:-"qwen3-4b"}}
 KL_MODE=${KL_MODE:-"loss"}
@@ -75,6 +77,11 @@ CLI_TOTAL_STEPS=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    -method|--method)
+      [[ $# -ge 2 ]] || { echo "Missing value for $1" >&2; usage; exit 1; }
+      METHOD_KIND="$2"
+      shift 2
+      ;;
     -reward|--reward)
       [[ $# -ge 2 ]] || { echo "Missing value for $1" >&2; usage; exit 1; }
       REWARD_KIND="$2"
@@ -151,8 +158,32 @@ conda activate verl
 set -u
 
 REWARD_KIND=$(lower "${REWARD_KIND}")
+METHOD_KIND=$(lower "${METHOD_KIND}")
 MODEL_PRESET=$(lower "${MODEL_PRESET}")
 KL_MODE=$(lower "${KL_MODE}")
+
+METHOD_ARGS=()
+case "${METHOD_KIND}" in
+  grpo)
+    METHOD_LABEL="grpo"
+    METHOD_ADV_ESTIMATOR_DEFAULT="grpo"
+    ;;
+  dapo)
+    METHOD_LABEL="dapo"
+    METHOD_ADV_ESTIMATOR_DEFAULT="grpo"
+    PPO_CLIP_RATIO_LOW=${PPO_CLIP_RATIO_LOW:-0.2}
+    PPO_CLIP_RATIO_HIGH=${PPO_CLIP_RATIO_HIGH:-0.28}
+    PPO_CLIP_RATIO_C=${PPO_CLIP_RATIO_C:-10.0}
+    METHOD_ARGS+=("actor_rollout_ref.actor.clip_ratio_low=${PPO_CLIP_RATIO_LOW}")
+    METHOD_ARGS+=("actor_rollout_ref.actor.clip_ratio_high=${PPO_CLIP_RATIO_HIGH}")
+    METHOD_ARGS+=("actor_rollout_ref.actor.clip_ratio_c=${PPO_CLIP_RATIO_C}")
+    ;;
+  *)
+    echo "Unsupported method: ${METHOD_KIND}" >&2
+    usage
+    exit 1
+    ;;
+esac
 
 case "${REWARD_KIND}" in
   ori|original)
@@ -389,6 +420,7 @@ if [[ "${TRACE}" == "1" ]]; then
 fi
 
 echo "[INFO] RUN_VARIANT=${RUN_VARIANT}"
+echo "[INFO] METHOD_KIND=${METHOD_KIND}"
 echo "[INFO] REWARD_KIND=${REWARD_KIND}"
 echo "[INFO] CODING_ENABLE_SUB_REWARDS=${CODING_ENABLE_SUB_REWARDS}"
 if [[ "${ADV_ESTIMATOR:-grpo}" == "gdpo" ]]; then
@@ -454,24 +486,31 @@ SKIP_SANDBOX_HEALTHCHECK=${SKIP_SANDBOX_HEALTHCHECK:-0}
 ############################################
 # 1) Experiment config
 ############################################
-PROJECT_NAME=${PROJECT_NAME:-"eurus_grpo"}
+PROJECT_NAME=${PROJECT_NAME:-"eurus_${METHOD_LABEL}"}
 if [[ -n "${RUN_TAG}" ]]; then
-  DEFAULT_EXP_NAME="grpo-${MODEL_TAG}-${REWARD_LABEL}-${KL_LABEL}-${RUN_TAG}-${RUN_INSTANCE_TAG}"
+  DEFAULT_EXP_NAME="${METHOD_LABEL}-${MODEL_TAG}-${REWARD_LABEL}-${KL_LABEL}-${RUN_TAG}-${RUN_INSTANCE_TAG}"
 else
-  DEFAULT_EXP_NAME="grpo-${MODEL_TAG}-${REWARD_LABEL}-${KL_LABEL}-${RUN_INSTANCE_TAG}"
+  DEFAULT_EXP_NAME="${METHOD_LABEL}-${MODEL_TAG}-${REWARD_LABEL}-${KL_LABEL}-${RUN_INSTANCE_TAG}"
 fi
 EXP_NAME=${EXP_NAME:-"${DEFAULT_EXP_NAME}"}
 
-ADV_ESTIMATOR=${ADV_ESTIMATOR:-"grpo"}
+ADV_ESTIMATOR=${ADV_ESTIMATOR:-"${METHOD_ADV_ESTIMATOR_DEFAULT}"}
 
 # PDPO hyperparameters
-PDPO_BETA_TIE=${PDPO_BETA_TIE:-0.0}
-PDPO_BETA_SAME=${PDPO_BETA_SAME:-0.25}
-PDPO_LAMBDA_AUX=${PDPO_LAMBDA_AUX:-0.25}
-PDPO_LAMBDA_AUX_START=${PDPO_LAMBDA_AUX_START:-0.05}
-PDPO_LAMBDA_AUX_WARMUP_STEPS=${PDPO_LAMBDA_AUX_WARMUP_STEPS:-300}
+PDPO_BETA_TIE=${PDPO_BETA_TIE:-0.05}
+PDPO_BETA_SAME=${PDPO_BETA_SAME:-0.0}
+PDPO_BETA_SAME_WRONG=${PDPO_BETA_SAME_WRONG:-0.0}
+PDPO_BETA_SAME_CORRECT=${PDPO_BETA_SAME_CORRECT:-0.0}
+PDPO_CORRECT_SCORE_THRESHOLD=${PDPO_CORRECT_SCORE_THRESHOLD:-0.999}
+PDPO_LAMBDA_AUX=${PDPO_LAMBDA_AUX:-0.12}
+PDPO_LAMBDA_AUX_START=${PDPO_LAMBDA_AUX_START:-0.04}
+PDPO_LAMBDA_AUX_WARMUP_STEPS=${PDPO_LAMBDA_AUX_WARMUP_STEPS:-80}
+PDPO_LAMBDA_AUX_DECAY_START_STEPS=${PDPO_LAMBDA_AUX_DECAY_START_STEPS:-120}
+PDPO_LAMBDA_AUX_DECAY_STEPS=${PDPO_LAMBDA_AUX_DECAY_STEPS:-180}
+PDPO_LAMBDA_AUX_FLOOR=${PDPO_LAMBDA_AUX_FLOOR:-0.02}
 PDPO_MIN_AUX_STD=${PDPO_MIN_AUX_STD:-1e-6}
 PDPO_MIN_MAIN_STD=${PDPO_MIN_MAIN_STD:-1e-6}
+PDPO_AUX_REQUIRE_MAIN_VARIANCE=${PDPO_AUX_REQUIRE_MAIN_VARIANCE:-true}
 PDPO_ANSWER_GATE_CHANNEL=${PDPO_ANSWER_GATE_CHANNEL:-coding_code_extractability_reward}
 PDPO_ANSWER_GATE_MIN=${PDPO_ANSWER_GATE_MIN:-0.5}
 PDPO_ANSWER_GATE_CLOSED_SCALE=${PDPO_ANSWER_GATE_CLOSED_SCALE:-0.0}
@@ -484,8 +523,16 @@ PDPO_FORMAT_CONSTRAINT_RELIABILITY_ENABLED=${PDPO_FORMAT_CONSTRAINT_RELIABILITY_
 PDPO_FORMAT_CONSTRAINT_SAFETY_ENABLED=${PDPO_FORMAT_CONSTRAINT_SAFETY_ENABLED:-false}
 PDPO_CORRECTNESS_SAFE=${PDPO_CORRECTNESS_SAFE:-true}
 PDPO_CORRECTNESS_MARGIN=${PDPO_CORRECTNESS_MARGIN:-1e-3}
-PDPO_AUX_BUDGET=${PDPO_AUX_BUDGET:-0.5}
+PDPO_AUX_BUDGET=${PDPO_AUX_BUDGET:-0.15}
 PDPO_AUX_BUDGET_NORMALIZE=${PDPO_AUX_BUDGET_NORMALIZE:-true}
+PDPO_RESPONSE_LENGTH_GATE_ENABLED=${PDPO_RESPONSE_LENGTH_GATE_ENABLED:-true}
+PDPO_RESPONSE_LENGTH_GATE_THRESHOLD=${PDPO_RESPONSE_LENGTH_GATE_THRESHOLD:-0.98}
+PDPO_RESPONSE_LENGTH_GATE_CLOSED_SCALE=${PDPO_RESPONSE_LENGTH_GATE_CLOSED_SCALE:-0.0}
+PDPO_DRIFT_GUARD_ENABLED=${PDPO_DRIFT_GUARD_ENABLED:-true}
+PDPO_DRIFT_GUARD_EMA_ALPHA=${PDPO_DRIFT_GUARD_EMA_ALPHA:-0.05}
+PDPO_DRIFT_GUARD_TOLERANCE=${PDPO_DRIFT_GUARD_TOLERANCE:-0.05}
+PDPO_DRIFT_GUARD_TARGET_DROP=${PDPO_DRIFT_GUARD_TARGET_DROP:-0.20}
+PDPO_DRIFT_GUARD_MIN_SCALE=${PDPO_DRIFT_GUARD_MIN_SCALE:-0.0}
 PDPO_RELIABILITY_ENABLED=${PDPO_RELIABILITY_ENABLED:-true}
 PDPO_RELIABILITY_EMA_ALPHA=${PDPO_RELIABILITY_EMA_ALPHA:-0.05}
 PDPO_RELIABILITY_MIN_SCALE=${PDPO_RELIABILITY_MIN_SCALE:-0.0}
@@ -508,7 +555,7 @@ PDPO_SAFETY_DUAL_INVERSION_TARGET=${PDPO_SAFETY_DUAL_INVERSION_TARGET:-0.20}
 PDPO_SAFETY_DUAL_MIN_COMPARABLE_GROUPS=${PDPO_SAFETY_DUAL_MIN_COMPARABLE_GROUPS:-4}
 PDPO_SAFETY_DUAL_EMA_ALPHA=${PDPO_SAFETY_DUAL_EMA_ALPHA:-0.10}
 PDPO_SAFETY_DUAL_RECOVERY_SCALE=${PDPO_SAFETY_DUAL_RECOVERY_SCALE:-0.25}
-PDPO_NEED_DUAL_ENABLED=${PDPO_NEED_DUAL_ENABLED:-true}
+PDPO_NEED_DUAL_ENABLED=${PDPO_NEED_DUAL_ENABLED:-false}
 PDPO_NEED_DUAL_ETA=${PDPO_NEED_DUAL_ETA:-0.02}
 PDPO_NEED_DUAL_TARGET=${PDPO_NEED_DUAL_TARGET:-0.75}
 PDPO_NEED_DUAL_MAX=${PDPO_NEED_DUAL_MAX:-2.0}
@@ -593,7 +640,7 @@ if [[ -d "${CKPTS_DIR}" ]] && find "${CKPTS_DIR}" -mindepth 1 -maxdepth 1 -print
 fi
 mkdir -p "${CKPTS_DIR}"
 
-RAY_TMP_ROOT=${RAY_TMP_ROOT:-"/tmp/ray_yujiz"}
+RAY_TMP_ROOT=${RAY_TMP_ROOT:-"/dev/shm/ray_yujiz"}
 RAY_TMP_TAG=${RAY_TMP_TAG:-"$(date +%m%d%H%M%S)_$$"}
 RAY_TMPDIR=${RAY_TMPDIR:-"${RAY_TMP_ROOT}/${RAY_TMP_TAG}"}
 mkdir -p "${RAY_TMPDIR}"
@@ -869,6 +916,7 @@ CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES} python3 -m verl.trainer.main_ppo \
   actor_rollout_ref.rollout.n="${N_RESP_PER_PROMPT}" \
   algorithm.adv_estimator="${ADV_ESTIMATOR}" \
   "${GDPO_ARGS[@]}" \
+  "${METHOD_ARGS[@]}" \
   actor_rollout_ref.model.use_remove_padding=true \
   actor_rollout_ref.actor.use_dynamic_bsz="${USE_DYNAMIC_BSZ}" \
   actor_rollout_ref.ref.log_prob_use_dynamic_bsz="${USE_DYNAMIC_BSZ}" \
@@ -923,11 +971,18 @@ CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES} python3 -m verl.trainer.main_ppo \
   ++reward_model.reward_kwargs.coding_weight_block_level_process_reward="${CODING_WEIGHT_BLOCK_LEVEL_PROCESS_REWARD}" \
   ++reward_model.reward_kwargs.pdpo_beta_tie="${PDPO_BETA_TIE}" \
   ++reward_model.reward_kwargs.pdpo_beta_same="${PDPO_BETA_SAME}" \
+  ++reward_model.reward_kwargs.pdpo_beta_same_wrong="${PDPO_BETA_SAME_WRONG}" \
+  ++reward_model.reward_kwargs.pdpo_beta_same_correct="${PDPO_BETA_SAME_CORRECT}" \
+  ++reward_model.reward_kwargs.pdpo_correct_score_threshold="${PDPO_CORRECT_SCORE_THRESHOLD}" \
   ++reward_model.reward_kwargs.pdpo_lambda_aux="${PDPO_LAMBDA_AUX}" \
   ++reward_model.reward_kwargs.pdpo_lambda_aux_start="${PDPO_LAMBDA_AUX_START}" \
   ++reward_model.reward_kwargs.pdpo_lambda_aux_warmup_steps="${PDPO_LAMBDA_AUX_WARMUP_STEPS}" \
+  ++reward_model.reward_kwargs.pdpo_lambda_aux_decay_start_steps="${PDPO_LAMBDA_AUX_DECAY_START_STEPS}" \
+  ++reward_model.reward_kwargs.pdpo_lambda_aux_decay_steps="${PDPO_LAMBDA_AUX_DECAY_STEPS}" \
+  ++reward_model.reward_kwargs.pdpo_lambda_aux_floor="${PDPO_LAMBDA_AUX_FLOOR}" \
   ++reward_model.reward_kwargs.pdpo_min_aux_std="${PDPO_MIN_AUX_STD}" \
   ++reward_model.reward_kwargs.pdpo_min_main_std="${PDPO_MIN_MAIN_STD}" \
+  ++reward_model.reward_kwargs.pdpo_aux_require_main_variance="${PDPO_AUX_REQUIRE_MAIN_VARIANCE}" \
   ++reward_model.reward_kwargs.pdpo_answer_gate_channel="${PDPO_ANSWER_GATE_CHANNEL}" \
   ++reward_model.reward_kwargs.pdpo_answer_gate_min="${PDPO_ANSWER_GATE_MIN}" \
   ++reward_model.reward_kwargs.pdpo_answer_gate_closed_scale="${PDPO_ANSWER_GATE_CLOSED_SCALE}" \
@@ -942,6 +997,14 @@ CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES} python3 -m verl.trainer.main_ppo \
   ++reward_model.reward_kwargs.pdpo_correctness_margin="${PDPO_CORRECTNESS_MARGIN}" \
   ++reward_model.reward_kwargs.pdpo_aux_budget="${PDPO_AUX_BUDGET}" \
   ++reward_model.reward_kwargs.pdpo_aux_budget_normalize="${PDPO_AUX_BUDGET_NORMALIZE}" \
+  ++reward_model.reward_kwargs.pdpo_response_length_gate_enabled="${PDPO_RESPONSE_LENGTH_GATE_ENABLED}" \
+  ++reward_model.reward_kwargs.pdpo_response_length_gate_threshold="${PDPO_RESPONSE_LENGTH_GATE_THRESHOLD}" \
+  ++reward_model.reward_kwargs.pdpo_response_length_gate_closed_scale="${PDPO_RESPONSE_LENGTH_GATE_CLOSED_SCALE}" \
+  ++reward_model.reward_kwargs.pdpo_drift_guard_enabled="${PDPO_DRIFT_GUARD_ENABLED}" \
+  ++reward_model.reward_kwargs.pdpo_drift_guard_ema_alpha="${PDPO_DRIFT_GUARD_EMA_ALPHA}" \
+  ++reward_model.reward_kwargs.pdpo_drift_guard_tolerance="${PDPO_DRIFT_GUARD_TOLERANCE}" \
+  ++reward_model.reward_kwargs.pdpo_drift_guard_target_drop="${PDPO_DRIFT_GUARD_TARGET_DROP}" \
+  ++reward_model.reward_kwargs.pdpo_drift_guard_min_scale="${PDPO_DRIFT_GUARD_MIN_SCALE}" \
   ++reward_model.reward_kwargs.pdpo_reliability_enabled="${PDPO_RELIABILITY_ENABLED}" \
   ++reward_model.reward_kwargs.pdpo_reliability_ema_alpha="${PDPO_RELIABILITY_EMA_ALPHA}" \
   ++reward_model.reward_kwargs.pdpo_reliability_min_scale="${PDPO_RELIABILITY_MIN_SCALE}" \

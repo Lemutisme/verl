@@ -27,13 +27,23 @@ PDPO_METRICS: dict[str, float] = {}
 class PDPOConfig:
     """Hyper-parameters for PDPO advantage estimation."""
 
-    beta_tie: float = 0.0
-    beta_same: float = 0.25
-    lambda_aux: float = 0.25
-    lambda_aux_start: float = 0.05
-    lambda_aux_warmup_steps: int = 0
+    beta_tie: float = 0.05
+    beta_same: float = 0.0
+    beta_same_wrong: float = 0.0
+    beta_same_correct: float = 0.0
+    correct_score_threshold: float = 0.999
+    lambda_aux: float = 0.12
+    lambda_aux_start: float = 0.04
+    lambda_aux_warmup_steps: int = 80
+    lambda_aux_decay_start_steps: int = 120
+    lambda_aux_decay_steps: int = 180
+    lambda_aux_floor: float = 0.02
     min_aux_std: float = 1e-6
     min_main_std: float = 1e-6
+    aux_require_main_variance: bool = True
+    response_length_gate_enabled: bool = True
+    response_length_gate_threshold: float = 0.98
+    response_length_gate_closed_scale: float = 0.0
     answer_gate_channel: str = "math_answer_extractability_reward"
     answer_gate_min: float = 0.5
     answer_gate_closed_scale: float = 0.0
@@ -48,8 +58,14 @@ class PDPOConfig:
     correctness_safe: bool = True
     correctness_margin: float = 1e-3
 
-    aux_budget: float = 0.5
+    aux_budget: float = 0.15
     aux_budget_normalize: bool = True
+
+    drift_guard_enabled: bool = True
+    drift_guard_ema_alpha: float = 0.05
+    drift_guard_tolerance: float = 0.05
+    drift_guard_target_drop: float = 0.20
+    drift_guard_min_scale: float = 0.0
 
     reliability_enabled: bool = True
     reliability_ema_alpha: float = 0.05
@@ -75,7 +91,7 @@ class PDPOConfig:
     safety_dual_ema_alpha: float = 0.10
     safety_dual_recovery_scale: float = 0.25
 
-    need_dual_enabled: bool = True
+    need_dual_enabled: bool = False
     need_dual_eta: float = 0.02
     need_dual_target: float = 0.75
     need_dual_max: float = 2.0
@@ -94,9 +110,12 @@ class PDPOConfig:
             "beta_wrong": "beta_same",
             "beta_flat": "beta_same",
             "beta_no_main": "beta_same",
+            "beta_flat_wrong": "beta_same_wrong",
+            "beta_flat_correct": "beta_same_correct",
         }
         field_names = {f.name for f in cls.__dataclass_fields__.values()}
         filtered: dict[str, Any] = {}
+        explicit_fields: set[str] = set()
 
         for key, value in d.items():
             candidates = [key]
@@ -108,6 +127,11 @@ class PDPOConfig:
                 if short not in field_names:
                     continue
                 filtered[short] = _coerce_config_value(value, getattr(cls, short))
+                explicit_fields.add(short)
+
+        if "beta_same" in explicit_fields:
+            filtered.setdefault("beta_same_wrong", filtered["beta_same"])
+            filtered.setdefault("beta_same_correct", filtered["beta_same"])
 
         return cls(**filtered)
 
@@ -122,6 +146,8 @@ class PDPOState:
     channel_safety_pressure_ema: dict[str, float] = field(default_factory=dict)
     channel_need_dual: dict[str, float] = field(default_factory=dict)
     channel_need_metric_ema: dict[str, float] = field(default_factory=dict)
+    main_reward_ema: Optional[float] = None
+    main_reward_peak_ema: Optional[float] = None
 
 
 _PDPO_STATE: Optional[PDPOState] = None
@@ -675,15 +701,59 @@ def _combine_correctness_safe(
     return safe, clamp_count, min_margin
 
 
-def _effective_lambda_aux(state: PDPOState, cfg: PDPOConfig) -> float:
+def _effective_lambda_aux(state: PDPOState, cfg: PDPOConfig) -> tuple[float, float]:
     warmup_steps = max(0, int(cfg.lambda_aux_warmup_steps))
     target = max(0.0, cfg.lambda_aux)
     if warmup_steps <= 0:
-        return target
+        base = target
+    else:
+        start = _clamp(cfg.lambda_aux_start, 0.0, target)
+        progress = _clamp(state.step / max(float(warmup_steps), 1.0), 0.0, 1.0)
+        base = start + (target - start) * progress
 
-    start = _clamp(cfg.lambda_aux_start, 0.0, target)
-    progress = _clamp(state.step / max(float(warmup_steps), 1.0), 0.0, 1.0)
-    return start + (target - start) * progress
+    decay_start = max(0, int(cfg.lambda_aux_decay_start_steps))
+    decay_steps = max(0, int(cfg.lambda_aux_decay_steps))
+    floor = _clamp(cfg.lambda_aux_floor, 0.0, target)
+    if state.step < decay_start:
+        effective = base
+    elif decay_steps <= 0:
+        effective = min(base, floor)
+    else:
+        decay_progress = _clamp((state.step - decay_start) / max(float(decay_steps), 1.0), 0.0, 1.0)
+        decayed_cap = target - (target - floor) * decay_progress
+        effective = min(base, decayed_cap)
+
+    decay_scale = 1.0 if target <= 0.0 else effective / max(target, cfg.epsilon)
+    return float(effective), float(decay_scale)
+
+
+def _drift_guard_scale(
+    state: PDPOState,
+    cfg: PDPOConfig,
+    main_reward_mean: float,
+) -> tuple[float, float, float, float]:
+    if not cfg.drift_guard_enabled:
+        return 1.0, 0.0, float(main_reward_mean), float(main_reward_mean)
+
+    alpha = _clamp(cfg.drift_guard_ema_alpha, 0.0, 1.0)
+    if state.main_reward_ema is None:
+        ema = float(main_reward_mean)
+    else:
+        ema = (1.0 - alpha) * state.main_reward_ema + alpha * float(main_reward_mean)
+    state.main_reward_ema = ema
+
+    if state.main_reward_peak_ema is None:
+        peak_ema = ema
+    else:
+        peak_ema = max(state.main_reward_peak_ema, ema)
+    state.main_reward_peak_ema = peak_ema
+
+    drop = max(0.0, peak_ema - ema)
+    tolerated_drop = max(0.0, drop - max(0.0, cfg.drift_guard_tolerance))
+    target_drop = max(cfg.drift_guard_target_drop, cfg.epsilon)
+    scale = 1.0 - tolerated_drop / target_drop
+    scale = _clamp(scale, max(0.0, cfg.drift_guard_min_scale), 1.0)
+    return float(scale), float(drop), float(ema), float(peak_ema)
 
 
 def _lexicographic_aux_component(
@@ -703,7 +773,13 @@ def _lexicographic_aux_component(
         group_aux = aux_adv_sum[idx_tensor]
 
         if group_main.std().item() <= cfg.min_main_std:
-            component[idx_tensor] = cfg.beta_same * group_aux
+            if cfg.aux_require_main_variance:
+                continue
+            if group_main.max().item() >= cfg.correct_score_threshold:
+                flat_beta = cfg.beta_same_correct
+            else:
+                flat_beta = cfg.beta_same_wrong
+            component[idx_tensor] = flat_beta * group_aux
             continue
 
         if cfg.beta_tie <= 0.0:
@@ -738,9 +814,9 @@ def compute_pdpo_advantage(
     """Compute PDPO advantages.
 
     PDPO uses ``A_main`` from the original reward and adds independently
-    normalised auxiliary advantages.  Auxiliary channels get full weight only
-    in groups where the original reward has no variance; otherwise they are a
-    small tie-breaker.
+    normalised auxiliary advantages.  Auxiliary channels are weak tie-breakers
+    inside equal-main-reward buckets; flat all-wrong groups are ignored by
+    default because the task reward provides no anchor for the proxy.
     """
     global PDPO_METRICS
 
@@ -775,6 +851,23 @@ def compute_pdpo_advantage(
             device=token_level_rewards.device,
             dtype=token_level_rewards.dtype,
         )
+
+    response_length_gate_scale = torch.ones_like(main_adv)
+    response_length_gate_clipped_ratio = 0.0
+    response_length_gate_mean_scale = 1.0
+    if cfg.response_length_gate_enabled and response_mask.ndim >= 2 and response_mask.shape[-1] > 0:
+        max_response_len = float(response_mask.shape[-1])
+        threshold = _clamp(cfg.response_length_gate_threshold, 0.0, 1.0)
+        closed_scale = _clamp(cfg.response_length_gate_closed_scale, 0.0, 1.0)
+        response_lengths = response_mask.detach().to(dtype=main_adv.dtype).sum(dim=-1).reshape(-1)
+        clipped_mask = response_lengths >= (threshold * max_response_len)
+        response_length_gate_scale = torch.where(
+            clipped_mask,
+            torch.full_like(main_adv, closed_scale),
+            torch.ones_like(main_adv),
+        )
+        response_length_gate_clipped_ratio = float(clipped_mask.float().mean().item())
+        response_length_gate_mean_scale = float(response_length_gate_scale.mean().item())
 
     aux_adv_sum = torch.zeros_like(main_adv)
     aux_raw_sum = torch.zeros_like(main_adv)
@@ -916,24 +1009,44 @@ def compute_pdpo_advantage(
         if preference_weight <= 0.0:
             continue
 
-        active_mask = _active_group_mask(aux_scores, id2indices, cfg.min_aux_std)
+        preference_scores = aux_scores
+        if cfg.response_length_gate_enabled:
+            preference_scores = aux_scores.clone()
+            for idxs in id2indices.values():
+                if not idxs:
+                    continue
+                idx_tensor = torch.tensor(idxs, device=aux_scores.device)
+                group_scale = response_length_gate_scale[idx_tensor]
+                neutral_mask = group_scale <= eps
+                if not neutral_mask.any().item():
+                    continue
+                keep_mask = ~neutral_mask
+                if keep_mask.any().item():
+                    neutral_value = aux_scores[idx_tensor][keep_mask].mean()
+                else:
+                    neutral_value = aux_scores[idx_tensor].mean()
+                preference_scores[idx_tensor[neutral_mask]] = neutral_value
+
+        active_mask = _active_group_mask(preference_scores, id2indices, cfg.min_aux_std)
         if not active_mask.any().item():
             continue
 
         aux_adv = group_normalize_scores(
-            aux_scores,
+            preference_scores,
             index,
             norm_by_std=norm_adv_by_std_in_grpo,
             eps=eps,
         )
         aux_adv = torch.where(active_mask, aux_adv, torch.zeros_like(aux_adv))
+        aux_adv = aux_adv * response_length_gate_scale
         channel_contributions.append((metric_name, float(preference_weight), aux_adv, aux_scores))
         active_channels += 1
         weight_sum_pre_budget += float(preference_weight)
 
         active_group_count += sum(
             1 for idxs in id2indices.values()
-            if len(idxs) > 1 and aux_scores[torch.tensor(idxs, device=aux_scores.device)].std().item() > cfg.min_aux_std
+            if len(idxs) > 1
+            and preference_scores[torch.tensor(idxs, device=preference_scores.device)].std().item() > cfg.min_aux_std
         )
 
     aux_budget = max(0.0, float(cfg.aux_budget))
@@ -950,7 +1063,13 @@ def compute_pdpo_advantage(
         aux_raw_sum = aux_raw_sum + budgeted_weight * aux_scores
         weight_sum += budgeted_weight
 
-    lambda_aux_effective = _effective_lambda_aux(state, cfg)
+    lambda_aux_base, lambda_aux_decay_scale = _effective_lambda_aux(state, cfg)
+    drift_guard_scale, drift_guard_drop, drift_guard_ema, drift_guard_peak_ema = _drift_guard_scale(
+        state,
+        cfg,
+        float(main_scores.mean().item()),
+    )
+    lambda_aux_effective = lambda_aux_base * drift_guard_scale
     aux_component = lambda_aux_effective * _lexicographic_aux_component(
         aux_adv_sum,
         main_scores,
@@ -1001,10 +1120,30 @@ def compute_pdpo_advantage(
         "pdpo/aux_budget_normalize": float(cfg.aux_budget_normalize),
         "pdpo/beta_tie": cfg.beta_tie,
         "pdpo/beta_same": cfg.beta_same,
+        "pdpo/beta_same_wrong": cfg.beta_same_wrong,
+        "pdpo/beta_same_correct": cfg.beta_same_correct,
+        "pdpo/correct_score_threshold": cfg.correct_score_threshold,
         "pdpo/lambda_aux": cfg.lambda_aux,
         "pdpo/lambda_aux_start": cfg.lambda_aux_start,
         "pdpo/lambda_aux_warmup_steps": float(cfg.lambda_aux_warmup_steps),
+        "pdpo/lambda_aux_decay_start_steps": float(cfg.lambda_aux_decay_start_steps),
+        "pdpo/lambda_aux_decay_steps": float(cfg.lambda_aux_decay_steps),
+        "pdpo/lambda_aux_floor": float(cfg.lambda_aux_floor),
+        "pdpo/lambda_aux_decay_scale": float(lambda_aux_decay_scale),
         "pdpo/lambda_aux_effective": float(lambda_aux_effective),
+        "pdpo/aux_require_main_variance": float(cfg.aux_require_main_variance),
+        "pdpo/response_length_gate_enabled": float(cfg.response_length_gate_enabled),
+        "pdpo/response_length_gate_threshold": float(cfg.response_length_gate_threshold),
+        "pdpo/response_length_gate_closed_scale": float(cfg.response_length_gate_closed_scale),
+        "pdpo/response_length_gate_clipped_ratio": float(response_length_gate_clipped_ratio),
+        "pdpo/response_length_gate_mean_scale": float(response_length_gate_mean_scale),
+        "pdpo/drift_guard_enabled": float(cfg.drift_guard_enabled),
+        "pdpo/drift_guard_scale": float(drift_guard_scale),
+        "pdpo/drift_guard_drop": float(drift_guard_drop),
+        "pdpo/drift_guard_ema": float(drift_guard_ema),
+        "pdpo/drift_guard_peak_ema": float(drift_guard_peak_ema),
+        "pdpo/drift_guard_tolerance": float(cfg.drift_guard_tolerance),
+        "pdpo/drift_guard_target_drop": float(cfg.drift_guard_target_drop),
         "pdpo/correctness_safe": float(cfg.correctness_safe),
         "pdpo/correctness_safe_clamp_count": float(safety_clamp_count),
         "pdpo/correctness_margin_min": float(correctness_margin_min),

@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 
 # run_multiple_exp.sh
-# Usage: bash run_multiple_exp.sh [-gpus xx] [-steps N] [-reward {pdpo|gdpo|new|ori}] [-save]
+# Usage: bash run_multiple_exp.sh [-gpus xx] [-steps N] [-method {grpo|dapo}] [-reward {pdpo|gdpo|new|ori}] [-save]
 
 # Default values
 GPUS=""
 STEPS="400"
+METHOD_FILTER=""
 REWARD_FILTER=""
 CLEANUP_RAY_VLLM=false
 SAVE_MODEL=false
@@ -14,11 +15,12 @@ DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 usage() {
   cat <<'EOF'
 Usage:
-  bash run_multiple_exp.sh [-gpus xx] [-steps N] [-reward {pdpo|gdpo|new|ori}] [-save] [--cleanup-ray-vllm]
+  bash run_multiple_exp.sh [-gpus xx] [-steps N] [-method {grpo|dapo}] [-reward {pdpo|gdpo|new|ori}] [-save] [--cleanup-ray-vllm]
 
 Options:
   -gpus, --gpus             GPU ids to pass to child runs, e.g. 0 or 0,1
   -steps, --steps           Total training steps for each child run (default: 400)
+  -method, --method         Run only one method: grpo or dapo (default: grpo)
   -reward, --reward         Run only one reward preset: pdpo, gdpo, new, or ori
   -save, --save             Enable model checkpoint saving for child runs
   --cleanup-ray-vllm        Stop local Ray and kill vLLM before/after tasks
@@ -47,6 +49,11 @@ while [[ $# -gt 0 ]]; do
       STEPS="$2"
       shift 2
       ;;
+    -method|--method)
+      [[ $# -ge 2 ]] || { echo "Missing value for $1" >&2; usage; exit 1; }
+      METHOD_FILTER="$(lower "$2")"
+      shift 2
+      ;;
     -reward|--reward)
       [[ $# -ge 2 ]] || { echo "Missing value for $1" >&2; usage; exit 1; }
       REWARD_FILTER="$(lower "$2")"
@@ -73,6 +80,20 @@ while [[ $# -gt 0 ]]; do
 done
 
 # 1. Experiment Matrix
+METHODS=("grpo")
+if [ -n "$METHOD_FILTER" ]; then
+    case "$METHOD_FILTER" in
+        grpo|dapo)
+            METHODS=("$METHOD_FILTER")
+            ;;
+        *)
+            echo "[ERROR] Unsupported method: ${METHOD_FILTER}" >&2
+            usage
+            exit 1
+            ;;
+    esac
+fi
+
 REWARDS=("pdpo" "gdpo" "new" "ori")
 if [ -n "$REWARD_FILTER" ]; then
     case "$REWARD_FILTER" in
@@ -92,6 +113,7 @@ if [ -n "$REWARD_FILTER" ]; then
             ;;
     esac
 fi
+echo "[INFO] Method(s): ${METHODS[*]}"
 echo "[INFO] Reward preset(s): ${REWARDS[*]}"
 echo "[INFO] Ray/vLLM cleanup enabled: ${CLEANUP_RAY_VLLM}"
 
@@ -101,7 +123,7 @@ if [ "$SAVE_MODEL" = true ]; then
     export SAVE_BEST_CHECKPOINT="${SAVE_BEST_CHECKPOINT:-true}"
 else
     export SAVE_EVERY_STEPS="-1"
-    export SAVE_BEST_CHECKPOINT="false"
+    export SAVE_BEST_CHECKPOINT="${SAVE_BEST_CHECKPOINT:-true}"
     MATH_SAVE_ARGS=(--save_freq -1)
 fi
 echo "[INFO] Model checkpoint saving enabled: ${SAVE_MODEL}"
@@ -198,6 +220,9 @@ export VLLM_DISABLE_CUSTOM_ALL_REDUCE="${VLLM_DISABLE_CUSTOM_ALL_REDUCE:-true}"
 echo "[INFO] VLLM_ALLREDUCE_USE_SYMM_MEM=${VLLM_ALLREDUCE_USE_SYMM_MEM}"
 echo "[INFO] NCCL_CUMEM_ENABLE=${NCCL_CUMEM_ENABLE}"
 echo "[INFO] VLLM_DISABLE_CUSTOM_ALL_REDUCE=${VLLM_DISABLE_CUSTOM_ALL_REDUCE}"
+export RAY_TMP_ROOT="${RAY_TMP_ROOT:-/dev/shm/ray_yujiz}"
+mkdir -p "${RAY_TMP_ROOT}"
+echo "[INFO] RAY_TMP_ROOT=${RAY_TMP_ROOT}"
 
 # 2.4) Setup Global Logging Directory
 EXP_LOG_DIR="${DIR}/logs_multi_exp/$(date +%Y%m%d_%H%M%S)"
@@ -222,8 +247,10 @@ while true; do
         echo "################################################################"
         echo ""
 
+        for METHOD in "${METHODS[@]}"; do
         for REWARD in "${REWARDS[@]}"; do
             echo "  --------------------------------------------------------------"
+            echo "  # METHOD: ${METHOD}"
             echo "  # REWARD PRESET: ${REWARD}"
             echo "  --------------------------------------------------------------"
 
@@ -239,15 +266,16 @@ while true; do
             export TRAIN_PROMPT_MINI_BSZ="${TRAIN_PROMPT_MINI_BSZ:-4}"
             export OFFLOAD="${OFFLOAD:-false}"
 
-            TASK_OUT="${EXP_LOG_DIR}/R${ROUND}_math_${DATASET}_${REWARD}.stdout"
-            TASK_ERR="${EXP_LOG_DIR}/R${ROUND}_math_${DATASET}_${REWARD}.stderr"
-            echo "[RUN] Math/General: ${DATASET} | Reward: ${REWARD}"
+            TASK_OUT="${EXP_LOG_DIR}/R${ROUND}_math_${DATASET}_${METHOD}_${REWARD}.stdout"
+            TASK_ERR="${EXP_LOG_DIR}/R${ROUND}_math_${DATASET}_${METHOD}_${REWARD}.stderr"
+            echo "[RUN] Math/General: ${DATASET} | Method: ${METHOD} | Reward: ${REWARD}"
             echo "      ➜  Stdout: ${TASK_OUT}"
             echo "      ➜  Stderr: ${TASK_ERR}"
-            bash "${MATH_SCRIPT}" -reward "${REWARD}" -dataset "${DATASET}" -gpus "${GPUS}" -steps "${STEPS}" "${MATH_SAVE_ARGS[@]}" > >(tee "${TASK_OUT}") 2> >(tee "${TASK_ERR}" >&2)
-            log_failure $? "Math:${DATASET}:${REWARD}"
+            bash "${MATH_SCRIPT}" -method "${METHOD}" -reward "${REWARD}" -dataset "${DATASET}" -gpus "${GPUS}" -steps "${STEPS}" "${MATH_SAVE_ARGS[@]}" > >(tee "${TASK_OUT}") 2> >(tee "${TASK_ERR}" >&2)
+            log_failure $? "Math:${DATASET}:${METHOD}:${REWARD}"
             
             cleanup_ray_vllm "after task"
+        done
         done
     done
 
@@ -258,8 +286,10 @@ while true; do
     echo "################################################################"
     echo ""
 
+    for METHOD in "${METHODS[@]}"; do
     for REWARD in "${REWARDS[@]}"; do
         echo "  --------------------------------------------------------------"
+        echo "  # METHOD: ${METHOD}"
         echo "  # REWARD PRESET: ${REWARD}"
         echo "  --------------------------------------------------------------"
 
@@ -274,15 +304,16 @@ while true; do
         export TRAIN_PROMPT_MINI_BSZ=4
         export OFFLOAD=false
 
-        TASK4_OUT="${EXP_LOG_DIR}/R${ROUND}_code_eurus_${REWARD}.stdout"
-        TASK4_ERR="${EXP_LOG_DIR}/R${ROUND}_code_eurus_${REWARD}.stderr"
-        echo "[RUN] Code: Eurus | Reward: ${REWARD}"
+        TASK4_OUT="${EXP_LOG_DIR}/R${ROUND}_code_eurus_${METHOD}_${REWARD}.stdout"
+        TASK4_ERR="${EXP_LOG_DIR}/R${ROUND}_code_eurus_${METHOD}_${REWARD}.stderr"
+        echo "[RUN] Code: Eurus | Method: ${METHOD} | Reward: ${REWARD}"
         echo "      ➜  Stdout: ${TASK4_OUT}"
         echo "      ➜  Stderr: ${TASK4_ERR}"
-        bash "${CODE_SCRIPT}" -reward "${REWARD}" -gpus "${GPUS}" -steps "${STEPS}" > >(tee "${TASK4_OUT}") 2> >(tee "${TASK4_ERR}" >&2)
-        log_failure $? "Code:Eurus:${REWARD}"
+        bash "${CODE_SCRIPT}" -method "${METHOD}" -reward "${REWARD}" -gpus "${GPUS}" -steps "${STEPS}" > >(tee "${TASK4_OUT}") 2> >(tee "${TASK4_ERR}" >&2)
+        log_failure $? "Code:Eurus:${METHOD}:${REWARD}"
         
         cleanup_ray_vllm "after task"
+    done
     done
 
     # Round Summary

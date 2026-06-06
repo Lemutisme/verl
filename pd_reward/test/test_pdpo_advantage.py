@@ -35,7 +35,15 @@ def _load_pdpo():
     import pdpo_init  # noqa: F401
     from verl.trainer.ppo.core_algos import get_adv_estimator_fn
 
-    return get_adv_estimator_fn("pdpo")
+    compute_pdpo_advantage = get_adv_estimator_fn("pdpo")
+
+    def compute_with_test_defaults(*args, **kwargs):
+        config = dict(kwargs.get("pdpo_config_dict") or {})
+        config.setdefault("pdpo_response_length_gate_enabled", "false")
+        kwargs["pdpo_config_dict"] = config
+        return compute_pdpo_advantage(*args, **kwargs)
+
+    return compute_with_test_defaults
 
 
 def test_pdpo_is_registered_by_pdpo_init():
@@ -53,6 +61,7 @@ def test_all_same_main_reward_uses_aux_channels_for_advantage():
             "math_step_arithmetic_validity_reward": [0.0, 1.0, 0.0, 1.0],
         },
         pdpo_config_dict={
+            "pdpo_aux_require_main_variance": "false",
             "pdpo_beta_same": "1.0",
             "pdpo_beta_tie": "0.0",
             "pdpo_eta_s": "0.0",
@@ -64,6 +73,100 @@ def test_all_same_main_reward_uses_aux_channels_for_advantage():
     assert scalars[1].item() > scalars[0].item()
     assert scalars[3].item() > scalars[2].item()
     assert scalars.abs().sum().item() > 0.0
+
+
+def test_all_wrong_flat_group_defaults_to_no_aux_preference():
+    compute_pdpo_advantage = _load_pdpo()
+
+    adv, _ = compute_pdpo_advantage(
+        token_level_rewards=_make_token_rewards([0.0, 0.0, 0.0, 0.0]),
+        response_mask=torch.ones(4, 4),
+        index=np.array(["g1", "g1", "g1", "g1"]),
+        pdpo_aux_rewards_dict={
+            "math_step_arithmetic_validity_reward": [0.0, 1.0, 0.0, 1.0],
+        },
+        pdpo_config_dict={
+            "pdpo_eta_s": "0.0",
+            "pdpo_reliability_enabled": "false",
+            "pdpo_safety_dual_enabled": "false",
+            "math_weight_step_arithmetic_validity_reward": "1.0",
+        },
+    )
+
+    assert torch.allclose(adv[:, -1], torch.zeros(4), atol=1e-6)
+
+
+def test_default_flat_all_correct_group_ignores_aux_preference():
+    compute_pdpo_advantage = _load_pdpo()
+
+    adv, _ = compute_pdpo_advantage(
+        token_level_rewards=_make_token_rewards([1.0, 1.0, 1.0, 1.0]),
+        response_mask=torch.ones(4, 4),
+        index=np.array(["g1", "g1", "g1", "g1"]),
+        pdpo_aux_rewards_dict={
+            "math_step_arithmetic_validity_reward": [0.0, 1.0, 0.0, 1.0],
+        },
+        pdpo_config_dict={
+            "pdpo_eta_s": "0.0",
+            "pdpo_reliability_enabled": "false",
+            "pdpo_safety_dual_enabled": "false",
+            "math_weight_step_arithmetic_validity_reward": "1.0",
+        },
+    )
+
+    assert torch.allclose(adv[:, -1], torch.zeros(4), atol=1e-6)
+
+
+def test_flat_correct_aux_can_be_explicitly_enabled_for_ablation():
+    compute_pdpo_advantage = _load_pdpo()
+
+    adv, _ = compute_pdpo_advantage(
+        token_level_rewards=_make_token_rewards([1.0, 1.0, 1.0, 1.0]),
+        response_mask=torch.ones(4, 4),
+        index=np.array(["g1", "g1", "g1", "g1"]),
+        pdpo_aux_rewards_dict={
+            "math_step_arithmetic_validity_reward": [0.0, 1.0, 0.0, 1.0],
+        },
+        pdpo_config_dict={
+            "pdpo_aux_require_main_variance": "false",
+            "pdpo_beta_same_correct": "1.0",
+            "pdpo_lambda_aux": "1.0",
+            "pdpo_lambda_aux_start": "1.0",
+            "pdpo_lambda_aux_warmup_steps": "0",
+            "pdpo_eta_s": "0.0",
+            "pdpo_reliability_enabled": "false",
+            "pdpo_safety_dual_enabled": "false",
+            "math_weight_step_arithmetic_validity_reward": "1.0",
+        },
+    )
+
+    scalars = adv[:, -1]
+    assert scalars[1].item() > scalars[0].item()
+    assert scalars[3].item() > scalars[2].item()
+
+
+def test_mixed_group_defaults_to_small_aux_tie_breaker_inside_same_main_bucket():
+    compute_pdpo_advantage = _load_pdpo()
+
+    adv, _ = compute_pdpo_advantage(
+        token_level_rewards=_make_token_rewards([0.0, 0.0, 1.0, 1.0]),
+        response_mask=torch.ones(4, 4),
+        index=np.array(["g1", "g1", "g1", "g1"]),
+        pdpo_aux_rewards_dict={
+            "math_step_arithmetic_validity_reward": [0.0, 1.0, 0.0, 1.0],
+        },
+        pdpo_config_dict={
+            "pdpo_eta_s": "0.0",
+            "pdpo_reliability_enabled": "false",
+            "pdpo_safety_dual_enabled": "false",
+            "math_weight_step_arithmetic_validity_reward": "1.0",
+        },
+    )
+
+    scalars = adv[:, -1]
+    assert scalars[1].item() > scalars[0].item()
+    assert scalars[3].item() > scalars[2].item()
+    assert min(scalars[2].item(), scalars[3].item()) > max(scalars[0].item(), scalars[1].item())
 
 
 def test_main_reward_variance_keeps_correct_samples_above_antialigned_aux():
@@ -185,6 +288,7 @@ def test_answer_extractability_gate_suppresses_other_aux_channels():
             "math_answer_extractability_reward": [0.0, 1.0, 0.0, 1.0],
         },
         pdpo_config_dict={
+            "pdpo_aux_require_main_variance": "false",
             "pdpo_beta_same": "1.0",
             "pdpo_beta_tie": "0.0",
             "pdpo_eta_s": "0.0",
@@ -493,6 +597,175 @@ def test_lambda_aux_warmup_starts_from_configured_floor():
     assert pdpo_advantage.PDPO_METRICS["pdpo/lambda_aux_effective"] == pytest.approx(0.0)
 
 
+def test_lambda_aux_decays_to_floor_after_decay_window():
+    compute_pdpo_advantage = _load_pdpo()
+
+    config = {
+        "pdpo_aux_require_main_variance": "false",
+        "pdpo_beta_same_correct": "1.0",
+        "pdpo_eta_s": "0.0",
+        "pdpo_lambda_aux": "1.0",
+        "pdpo_lambda_aux_start": "1.0",
+        "pdpo_lambda_aux_warmup_steps": "0",
+        "pdpo_lambda_aux_decay_start_steps": "2",
+        "pdpo_lambda_aux_decay_steps": "2",
+        "pdpo_lambda_aux_floor": "0.25",
+        "pdpo_reliability_enabled": "false",
+        "pdpo_safety_dual_enabled": "false",
+        "math_weight_step_arithmetic_validity_reward": "1.0",
+    }
+
+    for _ in range(5):
+        compute_pdpo_advantage(
+            token_level_rewards=_make_token_rewards([1.0, 1.0, 1.0, 1.0]),
+            response_mask=torch.ones(4, 4),
+            index=np.array(["g1", "g1", "g1", "g1"]),
+            pdpo_aux_rewards_dict={
+                "math_step_arithmetic_validity_reward": [0.0, 1.0, 0.0, 1.0],
+            },
+            pdpo_config_dict=config,
+        )
+
+    import pdpo_advantage
+
+    assert pdpo_advantage.PDPO_METRICS["pdpo/lambda_aux_effective"] == pytest.approx(0.25)
+    assert pdpo_advantage.PDPO_METRICS["pdpo/lambda_aux_decay_scale"] == pytest.approx(0.25)
+
+
+def test_main_reward_drift_guard_scales_down_aux_signal():
+    compute_pdpo_advantage = _load_pdpo()
+
+    config = {
+        "pdpo_beta_tie": "1.0",
+        "pdpo_lambda_aux": "1.0",
+        "pdpo_lambda_aux_start": "1.0",
+        "pdpo_lambda_aux_warmup_steps": "0",
+        "pdpo_drift_guard_enabled": "true",
+        "pdpo_drift_guard_ema_alpha": "1.0",
+        "pdpo_drift_guard_tolerance": "0.0",
+        "pdpo_drift_guard_target_drop": "0.5",
+        "pdpo_drift_guard_min_scale": "0.0",
+        "pdpo_eta_s": "0.0",
+        "pdpo_reliability_enabled": "false",
+        "pdpo_safety_dual_enabled": "false",
+        "math_weight_step_arithmetic_validity_reward": "1.0",
+    }
+
+    compute_pdpo_advantage(
+        token_level_rewards=_make_token_rewards([0.0, 0.0, 1.0, 1.0]),
+        response_mask=torch.ones(4, 4),
+        index=np.array(["g1", "g1", "g1", "g1"]),
+        pdpo_aux_rewards_dict={
+            "math_step_arithmetic_validity_reward": [0.0, 1.0, 0.0, 1.0],
+        },
+        pdpo_config_dict=config,
+    )
+
+    adv, _ = compute_pdpo_advantage(
+        token_level_rewards=_make_token_rewards([0.0, 0.0, 0.0, 0.0]),
+        response_mask=torch.ones(4, 4),
+        index=np.array(["g1", "g1", "g1", "g1"]),
+        pdpo_aux_rewards_dict={
+            "math_step_arithmetic_validity_reward": [0.0, 1.0, 0.0, 1.0],
+        },
+        pdpo_config_dict={
+            **config,
+            "pdpo_aux_require_main_variance": "false",
+            "pdpo_beta_same_wrong": "1.0",
+        },
+    )
+
+    import pdpo_advantage
+
+    assert torch.allclose(adv[:, -1], torch.zeros(4), atol=1e-6)
+    assert pdpo_advantage.PDPO_METRICS["pdpo/drift_guard_scale"] == pytest.approx(0.0)
+    assert pdpo_advantage.PDPO_METRICS["pdpo/drift_guard_drop"] == pytest.approx(0.5)
+
+
+def test_response_length_gate_suppresses_aux_for_clipped_samples():
+    compute_pdpo_advantage = _load_pdpo()
+
+    response_mask = torch.tensor(
+        [
+            [1.0, 1.0, 0.0, 0.0],
+            [1.0, 1.0, 1.0, 1.0],
+            [1.0, 1.0, 0.0, 0.0],
+            [1.0, 1.0, 1.0, 1.0],
+        ],
+    )
+    adv, _ = compute_pdpo_advantage(
+        token_level_rewards=_make_token_rewards([1.0, 1.0, 1.0, 1.0]),
+        response_mask=response_mask,
+        index=np.array(["g1", "g1", "g1", "g1"]),
+        pdpo_aux_rewards_dict={
+            "math_step_arithmetic_validity_reward": [0.0, 1.0, 1.0, 1.0],
+        },
+        pdpo_config_dict={
+            "pdpo_aux_require_main_variance": "false",
+            "pdpo_beta_same_correct": "1.0",
+            "pdpo_lambda_aux": "1.0",
+            "pdpo_lambda_aux_start": "1.0",
+            "pdpo_lambda_aux_warmup_steps": "0",
+            "pdpo_response_length_gate_enabled": "true",
+            "pdpo_response_length_gate_threshold": "0.99",
+            "pdpo_response_length_gate_closed_scale": "0.0",
+            "pdpo_eta_s": "0.0",
+            "pdpo_reliability_enabled": "false",
+            "pdpo_safety_dual_enabled": "false",
+            "math_weight_step_arithmetic_validity_reward": "1.0",
+        },
+    )
+
+    import pdpo_advantage
+
+    scalars = adv.sum(dim=-1)
+    assert scalars[2].item() > scalars[0].item()
+    assert scalars[1].item() <= 0.0
+    assert scalars[3].item() <= 0.0
+    assert pdpo_advantage.PDPO_METRICS["pdpo/response_length_gate_clipped_ratio"] == pytest.approx(0.5)
+    assert pdpo_advantage.PDPO_METRICS["pdpo/response_length_gate_mean_scale"] == pytest.approx(0.5)
+
+
+def test_response_length_gate_does_not_turn_negative_proxy_into_positive_advantage():
+    compute_pdpo_advantage = _load_pdpo()
+
+    response_mask = torch.tensor(
+        [
+            [1.0, 1.0, 0.0, 0.0],
+            [1.0, 1.0, 1.0, 1.0],
+            [1.0, 1.0, 0.0, 0.0],
+            [1.0, 1.0, 1.0, 1.0],
+        ],
+    )
+    adv, _ = compute_pdpo_advantage(
+        token_level_rewards=_make_token_rewards([1.0, 1.0, 1.0, 1.0]),
+        response_mask=response_mask,
+        index=np.array(["g1", "g1", "g1", "g1"]),
+        pdpo_aux_rewards_dict={
+            "math_step_arithmetic_validity_reward": [-1.0, -1.0, 1.0, -1.0],
+        },
+        pdpo_config_dict={
+            "pdpo_aux_require_main_variance": "false",
+            "pdpo_beta_same_correct": "1.0",
+            "pdpo_lambda_aux": "1.0",
+            "pdpo_lambda_aux_start": "1.0",
+            "pdpo_lambda_aux_warmup_steps": "0",
+            "pdpo_response_length_gate_enabled": "true",
+            "pdpo_response_length_gate_threshold": "0.99",
+            "pdpo_response_length_gate_closed_scale": "0.0",
+            "pdpo_eta_s": "0.0",
+            "pdpo_reliability_enabled": "false",
+            "pdpo_safety_dual_enabled": "false",
+            "math_weight_step_arithmetic_validity_reward": "1.0",
+        },
+    )
+
+    scalars = adv.sum(dim=-1)
+    assert scalars[2].item() > scalars[0].item()
+    assert scalars[1].item() == pytest.approx(0.0, abs=1e-6)
+    assert scalars[3].item() == pytest.approx(0.0, abs=1e-6)
+
+
 def test_default_pdpo_aux_is_budgeted_as_small_advantage_signal():
     compute_pdpo_advantage = _load_pdpo()
 
@@ -518,13 +791,23 @@ def test_default_pdpo_aux_is_budgeted_as_small_advantage_signal():
     import pdpo_advantage
 
     metrics = pdpo_advantage.PDPO_METRICS
-    assert metrics["pdpo/beta_same"] == pytest.approx(0.25)
-    assert metrics["pdpo/lambda_aux"] == pytest.approx(0.25)
-    assert metrics["pdpo/lambda_aux_start"] == pytest.approx(0.05)
-    assert metrics["pdpo/aux_budget"] == pytest.approx(0.5)
+    assert metrics["pdpo/beta_tie"] == pytest.approx(0.05)
+    assert metrics["pdpo/beta_same"] == pytest.approx(0.0)
+    assert metrics["pdpo/beta_same_wrong"] == pytest.approx(0.0)
+    assert metrics["pdpo/beta_same_correct"] == pytest.approx(0.0)
+    assert metrics["pdpo/correct_score_threshold"] == pytest.approx(0.999)
+    assert metrics["pdpo/lambda_aux"] == pytest.approx(0.12)
+    assert metrics["pdpo/lambda_aux_start"] == pytest.approx(0.04)
+    assert metrics["pdpo/lambda_aux_warmup_steps"] == pytest.approx(80.0)
+    assert metrics["pdpo/lambda_aux_decay_start_steps"] == pytest.approx(120.0)
+    assert metrics["pdpo/lambda_aux_decay_steps"] == pytest.approx(180.0)
+    assert metrics["pdpo/lambda_aux_floor"] == pytest.approx(0.02)
+    assert metrics["pdpo/aux_require_main_variance"] == pytest.approx(1.0)
+    assert metrics["pdpo/drift_guard_enabled"] == pytest.approx(1.0)
+    assert metrics["pdpo/aux_budget"] == pytest.approx(0.15)
     assert metrics["pdpo/weight_sum_pre_budget"] == pytest.approx(2.0)
-    assert metrics["pdpo/budget_scale"] == pytest.approx(0.25)
-    assert metrics["pdpo/weight_sum"] == pytest.approx(0.5)
+    assert metrics["pdpo/budget_scale"] == pytest.approx(0.075)
+    assert metrics["pdpo/weight_sum"] == pytest.approx(0.15)
 
 
 def test_format_constraint_is_not_safety_suppressed_when_high_on_wrong_samples():
